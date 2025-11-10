@@ -1,0 +1,48 @@
+#starts conatiners with docker compose up sb
+
+
+version: '3.8' 
+
+services:
+  #kafka needs zookeeper to manage brokers 
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: zookeeper #conatiner name 
+    environment: #defines environment variables for the container 
+      ZOOKEEPER_CLIENT_PORT: 2181 #client listening port, kafka connects to zookeeper via this port 
+      ZOOKEEPER_TICK_TIME: 2000 #internal heartbeat timing - 2 seconds 
+    ports: #shows ports from inside the container to host machine 
+      - "2181:2181" #maps port 2181 on compouter to port inside the container 
+
+  #starts kafka broker - messaging system 
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka 
+    depends_on: 
+      - zookeeper
+    ports:
+      - "9092:9092" #accessible on port 9092, used by python services 
+      - "29092:29092" #port for other docker containers to communicate internally with kafka 
+    environment: #defines environment variables for the container 
+      KAFKA_BROKER_ID: 1 #only use one broker 
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 #tells kafka how to reach zookeeper 
+      #speciies where kafka listens for connections 
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092 #0.0.0.0: listens on all network interfaces
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092 #what kafka tells clients to use when connecting
+      
+      #security protocols - plaintext: no encryption or authentication
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL #which listeners brokers should talk to each other (internal one)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 #only one broker 
+
+  #web UI for seeing kafka messages and topics 
+  kafdrop:
+    image: obsidiandynamics/kafdrop
+    container_name: kafdrop
+    depends_on:
+      - kafka
+    ports:
+      - "9001:9000" #allows to open kafdrop in web browser
+    environment:  #defines environment variables for the container 
+      KAFKA_BROKERCONNECT: "kafka:29092" #connect to Kafka via Dockers internal address and port
+      JVM_OPTS: "-Xms32M -Xmx64M" #limits java memory usage to keep container lightweight 
