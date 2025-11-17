@@ -55,3 +55,13 @@ def get_all_cps():
     rows = c.fetchall()
     conn.close()
     return rows
+
+def reset_all_cp_status(new_status):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE charging_points SET status = ?", (new_status,))
+    conn.commit()
+    conn.close()
+
+
+

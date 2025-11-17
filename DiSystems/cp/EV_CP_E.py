@@ -1,24 +1,24 @@
 import asyncio
-import json, os
-import random
-import sys
-import time
+import json, os, random, sys, time
+from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from common.protocol_utils import pack_message, unpack_message
-from aiokafka import AIOKafkaProducer
 
+# load config 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "common", "config.json")
 with open(CONFIG_PATH) as f:
     CONFIG = json.load(f)
 
 KAFKA_BOOTSTRAP = CONFIG["kafka_bootstrap"]
-TELEMETRY_TOPIC = CONFIG["topics"]["telemetry"]
-ALERTS_TOPIC = CONFIG["topics"]["alerts"]
+TOPICS = CONFIG["topics"]
 
-CENTRAL_HOST = "127.0.0.1"
-CENTRAL_PORT = 9002
+TELEMETRY_TOPIC = TOPICS["telemetry"]
+STATUS_TOPIC = TOPICS["cp_status"]
+EVENTS_TOPIC = TOPICS["cp_events"]
+CMD_TOPIC = TOPICS["central_cmd"]
 
+# parse args
 if len(sys.argv) < 5:
-    print("Usage: python cp_engine.py <CP_ID> <LOCATION> <PRICE> <MONITOR_PORT>")
+    print("Usage: python -m cp.EV_CP_E <CP_ID> <LOCATION> <PRICE> <MONITOR_PORT>")
     sys.exit(1)
 
 CP_ID = sys.argv[1]
@@ -26,159 +26,174 @@ LOCATION = sys.argv[2]
 PRICE = float(sys.argv[3])
 MONITOR_PORT = int(sys.argv[4])
 
+CENTRAL_HOST = "127.0.0.1"
+CENTRAL_PORT = 9002
+
 
 class CPEngine:
     def __init__(self):
         self.session = None
-        self.driver_id = None
-        self.producer = None
+        self.driver = None
+        self.total_kwh = 0.0
         self.supplying = False
         self.central_writer = None
         self.central_reader = None
 
     async def start(self):
-        self.producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
-        await self.producer.start()
+        print(f"[{CP_ID}] Engine starting…")
+
+        # Kafka Producer
+        self.kafka = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
+        await self.kafka.start()
+
+        # Kafka Consumer for central commands
+        self.cmd_consumer = AIOKafkaConsumer(
+            CMD_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP,
+            group_id=f"cp_{CP_ID}",
+            auto_offset_reset="latest",
+        )
+        await self.cmd_consumer.start()
+        asyncio.create_task(self.listen_cmd())
+
+        # Heartbeat monitor listener
         asyncio.create_task(self.monitor_server())
+
+        # Register to Central (TCP)
         await self.connect_central()
 
+        # to keep engine alive
+        while True:
+            await asyncio.sleep(3600)
+
+    # TCP: connect to Central 
+    async def connect_central(self):
+        while True:
+            try:
+                r, w = await asyncio.open_connection(CENTRAL_HOST, CENTRAL_PORT)
+                self.central_reader, self.central_writer = r, w
+
+                reg = f"REGISTER#{CP_ID}#{LOCATION}#{PRICE}"
+                w.write(pack_message(reg))
+                await w.drain()
+
+                print(f"[{CP_ID}] ✅ Registered at Central")
+
+                asyncio.create_task(self.listen_central())
+                return
+            except:
+                print(f"[{CP_ID}] ❌ Central offline, retrying…")
+                await self.send_status("DISCONNECTED")
+                await asyncio.sleep(2)
+
+    # TCP messages from Central
+    async def listen_central(self):
+        try:
+            while True:
+                data = await self.central_reader.readuntil(b'\x03')
+                lrc = await self.central_reader.readexactly(1)
+                payload, ok = unpack_message(data + lrc)
+                if not ok:
+                    continue
+
+                if payload.startswith("START#"):
+                    _, session, driver = payload.split("#")
+                    self.session = session
+                    self.driver = driver
+                    asyncio.create_task(self.start_supply())
+
+                elif payload.startswith("STOP#"):
+                    self.supplying = False
+
+        except:
+            print(f"[{CP_ID}] ⚠️ Lost connection to Central")
+            await self.send_status("DISCONNECTED")
+            asyncio.create_task(self.connect_central())
+
+    # Charging Simulation 
+    async def start_supply(self):
+        print(f"[{CP_ID}] 🚗 Charging session {self.session} for driver {self.driver}")
+        self.supplying = True
+        self.total_kwh = 0.0
+
+        await self.send_status("OK")  # CP is fully operational
+
+        while self.supplying:
+            kw = 7.2 + random.uniform(-0.3, 0.3)
+            self.total_kwh += kw / 3600.0
+            eur = self.total_kwh * PRICE
+
+            telemetry = {
+                "cp_id": CP_ID,
+                "session_id": self.session,
+                "driver": self.driver,
+                "kw": round(kw, 3),
+                "eur": round(eur, 4),
+                "status": "CHARGING"
+            }
+            await self.kafka.send_and_wait(TELEMETRY_TOPIC, json.dumps(telemetry).encode())
+
+            if self.total_kwh >= 0.03:  # ~20 seconds
+                break
+
+            await asyncio.sleep(1)
+
+        final = {
+            "cp_id": CP_ID,
+            "session_id": self.session,
+            "driver": self.driver,
+            "status": "FINISHED",
+            "eur": round(self.total_kwh * PRICE, 4)
+        }
+        await self.kafka.send_and_wait(TELEMETRY_TOPIC, json.dumps(final).encode())
+
+        print(f"[{CP_ID}] 🔌 Charging complete")
+
+        self.supplying = False
+        self.session = None
+        self.driver = None
+
+    # Kafka broadcast listener
+    async def listen_cmd(self):
+        async for msg in self.cmd_consumer:
+            data = json.loads(msg.value.decode())
+            cmd = data.get("cmd")
+            cp = data.get("cp_id")
+
+            if cmd == "STOP_ALL" or (cmd == "STOP" and cp == CP_ID):
+                print(f"[{CP_ID}] ⛔ Forced stop received")
+                self.supplying = False
+
+            elif cmd == "RESUME_ALL" or (cmd == "RESUME" and cp == CP_ID):
+                print(f"[{CP_ID}] OK — waiting for next START")
+
+    # TCP Heartbeat listener (Monitor connects here) 
     async def monitor_server(self):
-        #monitor server, to receive Heartbeat messages 
         async def handle(reader, writer):
             try:
                 while True:
                     data = await reader.readuntil(b'\x03')
                     lrc = await reader.readexactly(1)
-                    raw = data + lrc
-                    payload, ok = unpack_message(raw)
+                    _, ok = unpack_message(data + lrc)
                     writer.write(b'\x06' if ok else b'\x15')
                     await writer.drain()
-            except asyncio.IncompleteReadError:
+            except:
                 pass
-            finally:
-                writer.close()
-                await writer.wait_closed()
 
-        server = await asyncio.start_server(handle, '0.0.0.0', MONITOR_PORT)
-        print(f"[{CP_ID}] Monitor server listening on {MONITOR_PORT}")
+        server = await asyncio.start_server(handle, "0.0.0.0", MONITOR_PORT)
+        print(f"[{CP_ID}] 🫀 Monitor listening on {MONITOR_PORT}")
         async with server:
             await server.serve_forever()
 
-    async def connect_central(self):
-        #conects to central and sends alerts when there is a mistake 
-        while True:
-            try:
-                reader, writer = await asyncio.open_connection(CENTRAL_HOST, CENTRAL_PORT)
-                self.central_reader = reader
-                self.central_writer = writer
-                reg = f"REGISTER#{CP_ID}#{LOCATION}#{PRICE}"
-                writer.write(pack_message(reg))
-                await writer.drain()
-                print(f"[{CP_ID}] REGISTER sent.")
-                asyncio.create_task(self.listen_central())
-                break
-            except Exception:
-                print(f"[{CP_ID}] Central not reachable — retry in 3s")
-                await self.send_alert("CONNECT_FAIL")
-                await asyncio.sleep(3)
-
-        while True:
-            await asyncio.sleep(60)
-
-    async def send_alert(self, reason: str):
-        #sends alert to kafka 
-        alert = {"cp_id": CP_ID, "reason": reason, "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
-        try:
-            await self.producer.send_and_wait(ALERTS_TOPIC, json.dumps(alert).encode())
-            print(f"[{CP_ID}] ⚠️ ALERT sent: {reason}")
-        except Exception as e:
-            print(f"[{CP_ID}] Failed to send alert: {e}")
-
-    async def listen_central(self):
-        #receives commands from central
-        try:
-            while True:
-                data = await self.central_reader.readuntil(b'\x03')
-                lrc = await self.central_reader.readexactly(1)
-                raw = data + lrc
-                payload, ok = unpack_message(raw)
-                if not ok or payload is None:
-                    continue
-
-                print(f"[{CP_ID}] Central -> {payload}")
-
-                if payload.startswith("START#"):
-                    _, session_id, driver_id = payload.split("#")
-                    self.session = session_id
-                    self.driver_id = driver_id
-                    asyncio.create_task(self.start_supply())
-
-                elif payload.startswith("STOP#"):
-                    _, session_id = payload.split("#")
-                    if session_id == self.session:
-                        print(f"[{CP_ID}] STOP received for session {session_id}")
-                        self.supplying = False
-
-        except asyncio.IncompleteReadError:
-            print(f"[{CP_ID}] Central disconnected.")
-            await self.send_alert("NO_RESPONSE")
-            await self.connect_central()
-        except Exception as e:
-            print(f"[{CP_ID}] listen_central error: {e}")
-            await self.send_alert("ERROR")
-
-    async def start_supply(self):
-        #charging session simulation
-        try:
-            print(f"[{CP_ID}] Started charging session for driver {self.driver_id}")
-            self.supplying = True
-            total_kwh = 0.0
-            kwh_rate = 7.2
-
-            while self.supplying:
-                kw = kwh_rate + random.uniform(-0.2, 0.2)
-                total_kwh += (kw / 3600.0)
-                eur = total_kwh * PRICE
-
-                telemetry = {
-                    "cp_id": CP_ID,
-                    "session_id": self.session,
-                    "driver_id": self.driver_id,
-                    "kw": round(kw, 3),
-                    "total_kwh": round(total_kwh, 6),
-                    "eur": round(eur, 4),
-                    "status": "CHARGING",
-                    "ts": time.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                await self.producer.send_and_wait(TELEMETRY_TOPIC, json.dumps(telemetry).encode())
-                await asyncio.sleep(1)
-
-                # 20 sekunden ladezeit
-                if total_kwh >= 0.03:
-                    self.supplying = False
-                    break
-
-        except Exception as e:
-            print(f"[{CP_ID}] Error during supply: {e}")
-            await self.send_alert("ERROR")
-        finally:
-            final = {
-                "cp_id": CP_ID,
-                "session_id": self.session,
-                "driver_id": self.driver_id,
-                "status": "FINISHED",
-                "ts": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-            await self.producer.send_and_wait(TELEMETRY_TOPIC, json.dumps(final).encode())
-            print(f"[{CP_ID}] Session finished.")
-            self.supplying = False
-            self.session = None
-            self.driver_id = None
+    # Kafka helper 
+    async def send_status(self, status):
+        msg = {"cp_id": CP_ID, "status": status}
+        await self.kafka.send_and_wait(STATUS_TOPIC, json.dumps(msg).encode())
 
 
 async def main():
-    engine = CPEngine()
-    await engine.start()
+    cp = CPEngine()
+    await cp.start()
 
 
 if __name__ == "__main__":

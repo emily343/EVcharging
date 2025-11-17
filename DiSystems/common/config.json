@@ -1,13 +1,11 @@
-
 {
-   "kafka_bootstrap": "localhost:9092",
-   "central_host": "0.0.0.0",
-   "central_port": 9002,
-  
-    "topics": {
-      "telemetry": "telemetry",
-      "alerts": "alerts"
-    },
-    "db_path": "central.db"
+  "kafka_bootstrap": "127.0.0.1:9092",
+  "topics": {
+    "telemetry": "cp_telemetry",
+    "cp_status": "cp_status",
+    "cp_events": "cp_events",
+    "driver_events": "driver_events",
+    "central_cmd": "central_cmd",
+    "alerts": "alerts"   
   }
-  
+}

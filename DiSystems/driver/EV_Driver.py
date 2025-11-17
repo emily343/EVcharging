@@ -1,87 +1,124 @@
-import asyncio #python library for asynchronous network communication
-import sys #reads command line parameters
-import os #used to build files
-from common.protocol_utils import pack_message, unpack_message 
+import asyncio
+import sys
+import os
+from common.protocol_utils import pack_message, unpack_message
 
-SERVICES_FILE = os.path.join(os.path.dirname(__file__), "..", "services.txt") #file path to services.txt, contains list of cps
+SERVICES_FILE = os.path.join(os.path.dirname(__file__), "..", "services.txt")
 
-#read CLI arguments
-#sys.argv: python list that contains everything written after the command 
-central_ip = sys.argv[sys.argv.index("--central-ip") + 1] #get central server IP (find --central-ip, take next value in the list)
-central_port = int(sys.argv[sys.argv.index("--central-port") + 1]) #get central server port, convert to int 
-driver_id = sys.argv[sys.argv.index("--driver-id") + 1] #get driver id
-auto_mode = "--auto" in sys.argv #checks if auto mode is enabled
+# parse CLI args 
+central_ip = sys.argv[sys.argv.index("--central-ip") + 1]
+central_port = int(sys.argv[sys.argv.index("--central-port") + 1])
+driver_id = sys.argv[sys.argv.index("--driver-id") + 1]
+auto_mode = "--auto" in sys.argv
 
-#driver class
+
 class Driver:
-    #constructor,defines driver object 
     def __init__(self, central_ip, central_port, driver_id, auto=False):
-        self.central_ip = central_ip #where to connect 
-        self.central_port = central_port #port of central
-        self.driver_id = driver_id 
-        self.reader = None 
-        self.writer = None  
-        self.auto = auto #auto mode flag
-        self.current_session = None #charging session id
+        self.central_ip = central_ip
+        self.central_port = central_port
+        self.driver_id = driver_id
+        self.reader = None
+        self.writer = None
+        self.current_session = None
+        self.auto = auto
 
-    #driver startup, connects to central server over tcp 
-    async def start(self): 
-        #opens a connection to central
-        self.reader, self.writer = await asyncio.open_connection(self.central_ip, self.central_port)
-        print(f"Connected to Central at {self.central_ip}:{self.central_port}")
-
-        self.writer.write(pack_message(f"AUTH_REQ#{self.driver_id}")) #sends authentication request to central
-        await self.writer.drain() #makes sure message is sent 
-
-        #continozs loop, listens for messages from central 
+    # TCP Connect
+    async def connect(self):
         while True:
-            data = await self.reader.readuntil(b'\x03') #reads incoming bytes until end of message marker 
-            lrc = await self.reader.readexactly(1) #LRC checksum, reads one more byte to validate message integrity
-            payload, ok = unpack_message(data + lrc) #decodes message and checks LRC
-            if not ok: 
-                continue #message gets ignored
+            try:
+                self.reader, self.writer = await asyncio.open_connection(self.central_ip, self.central_port)
+                print(f"✅ Connected to Central at {self.central_ip}:{self.central_port}")
+                break
+            except:
+                print("❌ Central not reachable — retry...")
+                await asyncio.sleep(2)
 
-            #if authentication successfull
-            if payload.startswith("AUTH_RESP"):
-                if self.auto: asyncio.create_task(self.run_service_sequence()) #auto mode: start automated charging cycle
-                else: asyncio.create_task(self.user_input_loop()) #manual mode: start user input loop
+    # Start Driver 
+    async def start(self):
+        await self.connect()
 
-            #start charging session
-            elif payload.startswith("START#"):
-                _, session, _ = payload.split("#") #parse message to extract session ID 
-                self.current_session = session #stores active session ID 
-                print(f"SESSION STARTED: {session}")
+        # send auth
+        self.writer.write(pack_message(f"AUTH_REQ#{self.driver_id}"))
+        await self.writer.drain()
 
-            elif payload.startswith("STOP#"):
-                print("SESSION STOPPED")
-                self.current_session = None
-
-    async def user_input_loop(self):
         while True:
-            cmd = await asyncio.get_event_loop().run_in_executor(None, input, "> ")
+            try:
+                data = await self.reader.readuntil(b'\x03')
+                lrc = await self.reader.readexactly(1)
+                payload, ok = unpack_message(data + lrc)
 
-            if cmd.lower() == "start":
+                if not ok:
+                    continue
+
+                # Handshake complete
+                if payload.startswith("AUTH_RESP"):
+                    print(f"👋 Driver {self.driver_id} authenticated.")
+                    if self.auto:
+                        asyncio.create_task(self.run_auto_cycle())
+                    else:
+                        asyncio.create_task(self.user_input())
+                
+                # Start session
+                elif payload.startswith("START#"):
+                    _, session_id, cp_id = payload.split("#")
+                    self.current_session = session_id
+                    print(f"⚡ Charging started at {cp_id} | Session {session_id}")
+
+                # Ticket from central
+                elif payload.startswith("TICKET#"):
+                    _, session, kw, eur = payload.split("#")
+                    print("\n===== ✅ SESSION SUMMARY =====")
+                    print(f"Driver: {self.driver_id}")
+                    print(f"Session: {session}")
+                    print(f"Energy: {kw} kWh")
+                    print(f"Cost:   {eur} €")
+                    print("=============================\n")
+                    self.current_session = None
+
+                # Central forced stop
+                elif payload.startswith("STOP#"):
+                    print("🛑 Charging stopped by Central.")
+                    self.current_session = None
+
+            except asyncio.IncompleteReadError:
+                print("⚠️ Central disconnected — reconnecting…")
+                await self.connect()
+                self.writer.write(pack_message(f"AUTH_REQ#{self.driver_id}"))
+                await self.writer.drain()
+
+    # ---------------- Manual Mode ----------------
+    async def user_input(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            cmd = await loop.run_in_executor(None, input, "> ")
+
+            if cmd == "start":
                 self.writer.write(pack_message(f"START_REQ#{self.driver_id}"))
                 await self.writer.drain()
 
-            elif cmd.lower() == "stop":
+            elif cmd == "stop":
                 if self.current_session:
                     self.writer.write(pack_message(f"STOP_REQ#{self.current_session}"))
                     await self.writer.drain()
-                    print("Stop request sent.")
                 else:
-                    print("No active charging session.")
+                    print("⚠️ No active session.")
 
-            elif cmd.lower() in ["quit", "exit"]:
+            elif cmd in ["quit", "exit"]:
+                print("👋 Bye!")
                 self.writer.close()
                 await self.writer.wait_closed()
                 break
 
-    async def run_service_sequence(self):
-        with open(SERVICES_FILE) as f:
-            cp_list = [c.strip() for c in f]
+            else:
+                print("Commands: start | stop | exit")
 
-        for cp in cp_list:
+    # Auto Mode 
+    async def run_auto_cycle(self):
+        with open(SERVICES_FILE) as f:
+            cps = [line.strip() for line in f]
+
+        for cp in cps:
+            print(f"🚘 Auto: Requesting charge at {cp}")
             self.writer.write(pack_message(f"START_REQ#{self.driver_id}"))
             await self.writer.drain()
             await asyncio.sleep(8)
@@ -89,14 +126,13 @@ class Driver:
             if self.current_session:
                 self.writer.write(pack_message(f"STOP_REQ#{self.current_session}"))
                 await self.writer.drain()
-
+            
             await asyncio.sleep(3)
 
 
 async def main():
-    d = Driver(central_ip, central_port, driver_id, auto=auto_mode)
+    d = Driver(central_ip, central_port, driver_id, auto_mode)
     await d.start()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
