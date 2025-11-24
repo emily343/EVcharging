@@ -118,9 +118,12 @@ class CPEngine:
 
         await self.send_status("OK")  # CP is fully operational
 
+        # Demo: etwa 10 Sekunden laden, ca. 1.0 kWh
         while self.supplying:
             kw = 7.2 + random.uniform(-0.3, 0.3)
-            self.total_kwh += kw / 3600.0
+
+            # statt kw/3600 sehr kleine Werte -> hier einfach 0.1 kWh pro Sekunde
+            self.total_kwh += 0.1
             eur = self.total_kwh * PRICE
 
             telemetry = {
@@ -133,16 +136,19 @@ class CPEngine:
             }
             await self.kafka.send_and_wait(TELEMETRY_TOPIC, json.dumps(telemetry).encode())
 
-            if self.total_kwh >= 0.03:  # ~20 seconds
+            # nach 10 Schritten (~1.0 kWh) stoppen
+            if self.total_kwh >= 1.0:
                 break
 
             await asyncio.sleep(1)
 
+        # finale Nachricht mit kWh UND €
         final = {
             "cp_id": CP_ID,
             "session_id": self.session,
             "driver": self.driver,
             "status": "FINISHED",
+            "kw": round(self.total_kwh, 3),
             "eur": round(self.total_kwh * PRICE, 4)
         }
         await self.kafka.send_and_wait(TELEMETRY_TOPIC, json.dumps(final).encode())
@@ -153,19 +159,35 @@ class CPEngine:
         self.session = None
         self.driver = None
 
+
     # Kafka broadcast listener
     async def listen_cmd(self):
         async for msg in self.cmd_consumer:
             data = json.loads(msg.value.decode())
             cmd = data.get("cmd")
-            cp = data.get("cp_id")
+            target = data.get("cp_id")
 
-            if cmd == "STOP_ALL" or (cmd == "STOP" and cp == CP_ID):
-                print(f"[{CP_ID}] ⛔ Forced stop received")
+            # Only react if broadcast OR targeted to this CP
+            if cmd == "STOP_ALL" or (cmd == "STOP" and target == CP_ID):
+                print(f"[{CP_ID}] ⛔ STOP received")
                 self.supplying = False
+                await self.send_status("OUT_OF_SERVICE")
 
-            elif cmd == "RESUME_ALL" or (cmd == "RESUME" and cp == CP_ID):
-                print(f"[{CP_ID}] OK — waiting for next START")
+            elif cmd == "RESUME_ALL" or (cmd == "RESUME" and target == CP_ID):
+                print(f"[{CP_ID}] 🔄 RESUME received")
+                # We return to available
+                await self.send_status("OK")
+
+            elif cmd == "OUT" and target == CP_ID:
+                print(f"[{CP_ID}] ❌ OUT OF SERVICE")
+                self.supplying = False
+                await self.send_status("OUT_OF_SERVICE")
+
+            elif cmd == "ACTIVATE" and target == CP_ID:
+                print(f"[{CP_ID}] 🟢 ACTIVATED again")
+                await self.send_status("OK")
+
+
 
     # TCP Heartbeat listener (Monitor connects here) 
     async def monitor_server(self):
@@ -181,7 +203,7 @@ class CPEngine:
                 pass
 
         server = await asyncio.start_server(handle, "0.0.0.0", MONITOR_PORT)
-        print(f"[{CP_ID}] 🫀 Monitor listening on {MONITOR_PORT}")
+        print(f"[{CP_ID}] 🫀 Waiting for monitor on port {MONITOR_PORT}…")
         async with server:
             await server.serve_forever()
 

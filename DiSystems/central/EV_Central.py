@@ -120,7 +120,7 @@ class CentralServer:
                     writer.write(pack_message(f"ACK#REGISTER#{cp_id}#OK"))
                     await writer.drain()
                     await self.publish_event("CP_REGISTERED", cp_id=cp_id, note=f"{location}/{price}")
-                    self.print_dashboard()
+    
                     continue
 
                 # Driver auth: AUTH_REQ#<driver_id>
@@ -160,7 +160,7 @@ class CentralServer:
                     info.update({"status": "SUMINISTRANDO", "driver": driver_id, "session": session_id})
                     self.last_seen[cp_id] = time.time()
                     await self.publish_event("SESSION_STARTED", cp_id=cp_id, session_id=session_id, driver_id=driver_id)
-                    self.print_dashboard()
+        
                     continue
 
                 # Stop request: STOP_REQ#<session_id>
@@ -182,7 +182,6 @@ class CentralServer:
                     meta = self.cp_meta.get(cp_id, {})
                     meta.update({"status": "ACTIVADO", "session": "-", "driver": "-"})
                     await self.publish_event("SESSION_STOP_REQUESTED", cp_id=cp_id, session_id=session_id)
-                    self.print_dashboard()
                     continue
 
         except Exception as e:
@@ -190,14 +189,14 @@ class CentralServer:
 
     # kafka loops
     async def kafka_loop(self):
-        """Single loop consuming from TELEMETRY / STATUS / EVENTS / DRIVER_EVENTS."""
         consumer = self.kafka_consumers[0]
+        last_update = 0
+
         async for rec in consumer:
             topic = rec.topic
             try:
                 data = json.loads(rec.value.decode())
-            except Exception:
-                # allow plain strings for simple control messages if ever sent
+            except:
                 data = {"raw": rec.value.decode(errors="ignore")}
 
             if topic == TELEMETRY_TOPIC:
@@ -209,7 +208,12 @@ class CentralServer:
             elif topic == DRIVER_EVENTS_TOPIC:
                 self.on_driver_event(data)
 
-            self.print_dashboard()
+            # update dashboard max 2x pro Sekunde
+            now = time.time()
+            if now - last_update > 0.5:
+                self.print_dashboard()
+                last_update = now
+
 
     def on_telemetry(self, data: Dict):
         """
@@ -259,16 +263,17 @@ class CentralServer:
         self.last_seen[cp_id] = time.time()
 
     def on_status(self, data: Dict):
-        """
-        Expected:
-          {"cp_id":"CP001","status":"OK"|"FAULT"|"RECOVER"|"OUT_OF_SERVICE"|"ACTIVATED"}
-        """
         cp_id = data.get("cp_id")
         if not cp_id:
             return
 
         st = data.get("status", "").upper()
-        # map to DB statuses
+
+        # if CP is currently charging, ignore OK updates from monitor
+        meta = self.cp_meta.get(cp_id, {})
+        if meta.get("status") == "SUMINISTRANDO" and st in ("OK", "ACTIVATED", "RECOVER"):
+            return
+
         mapping = {
             "OK": "ACTIVADO",
             "ACTIVATED": "ACTIVADO",
@@ -286,6 +291,7 @@ class CentralServer:
             meta["status"] = db_state
 
         self.last_seen[cp_id] = time.time()
+
 
     def on_cp_event(self, data: Dict):
        
@@ -311,21 +317,9 @@ class CentralServer:
 
     # CENTRAL CLI (Stop/Resume) 
     async def central_cli(self):
-        """
-        Simple non-blocking CLI: commands
-          stop <CP_ID>
-          resume <CP_ID>
-          out <CP_ID>           (put CP out-of-service)
-          activate <CP_ID>      (back to available)
-          stop_all
-          resume_all
-        """
         loop = asyncio.get_event_loop()
         while True:
-            try:
-                cmdline = await loop.run_in_executor(None, input, f"{Fore.CYAN}central> {Style.RESET_ALL}")
-            except EOFError:
-                return
+            cmdline = await loop.run_in_executor(None, input, "central> ")
             parts = cmdline.strip().split()
             if not parts:
                 continue
@@ -341,11 +335,6 @@ class CentralServer:
                 print("Broadcast RESUME_ALL sent.")
             elif cmd == "stop" and target:
                 await self.publish_central_cmd({"cmd":"STOP","cp_id":target})
-                # Best-effort via TCP too, if we have socket:
-                w = self.cp_sockets.get(target)
-                if w:
-                    w.write(pack_message(f"STOP#FORCE"))
-                    await w.drain()
                 print(f"STOP sent to {target}.")
             elif cmd == "resume" and target:
                 await self.publish_central_cmd({"cmd":"RESUME","cp_id":target})
