@@ -167,25 +167,36 @@ class CPEngine:
             cmd = data.get("cmd")
             target = data.get("cp_id")
 
-            # Only react if broadcast OR targeted to this CP
+            # STOP = nur Ladevorgang abbrechen
             if cmd == "STOP_ALL" or (cmd == "STOP" and target == CP_ID):
-                print(f"[{CP_ID}] ⛔ STOP received")
+                print(f"\n[{CP_ID}] ⛔ STOP received — stopping charging session")
+                self.supplying = False
+
+                # Nach einem STOP ist die CP weiterhin betriebsbereit!
+                print(f"[{CP_ID}] → Setting status to OK (ACTIVADO)")
+                await self.send_status("OK")
+                continue
+
+            # RESUME = nichts tun
+            # CP wartet einfach nur auf neuen START
+            if cmd == "RESUME_ALL" or (cmd == "RESUME" and target == CP_ID):
+                print(f"\n[{CP_ID}] 🔄 RESUME received (no active charging)")
+                print(f"[{CP_ID}] → Status bleibt OK (ACTIVADO)")
+                await self.send_status("OK")
+                continue
+
+            # OUT = CP außer Betrieb nehmen
+            if cmd == "OUT" and target == CP_ID:
+                print(f"\n[{CP_ID}] ❌ OUT OF SERVICE received")
                 self.supplying = False
                 await self.send_status("OUT_OF_SERVICE")
+                continue
 
-            elif cmd == "RESUME_ALL" or (cmd == "RESUME" and target == CP_ID):
-                print(f"[{CP_ID}] 🔄 RESUME received")
-                # We return to available
+            # ACTIVATE = CP wieder aktivieren
+            if cmd == "ACTIVATE" and target == CP_ID:
+                print(f"\n[{CP_ID}] 🟢 ACTIVATE received — CP available again")
                 await self.send_status("OK")
-
-            elif cmd == "OUT" and target == CP_ID:
-                print(f"[{CP_ID}] ❌ OUT OF SERVICE")
-                self.supplying = False
-                await self.send_status("OUT_OF_SERVICE")
-
-            elif cmd == "ACTIVATE" and target == CP_ID:
-                print(f"[{CP_ID}] 🟢 ACTIVATED again")
-                await self.send_status("OK")
+                continue
 
 
 

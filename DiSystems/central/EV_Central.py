@@ -211,7 +211,7 @@ class CentralServer:
             # update dashboard max 2x pro Sekunde
             now = time.time()
             if now - last_update > 0.5:
-                self.print_dashboard()
+                #self.print_dashboard()
                 last_update = now
 
 
@@ -268,9 +268,13 @@ class CentralServer:
             return
 
         st = data.get("status", "").upper()
+        meta = self.cp_meta.setdefault(cp_id, {})
 
-        # if CP is currently charging, ignore OK updates from monitor
-        meta = self.cp_meta.get(cp_id, {})
+        # 1) Wenn CP out-of-service (PARADO) ist → keine OK Meldung darf ihn aktivieren
+        if meta.get("status") == "PARADO" and st in ("OK", "ACTIVATED", "RECOVER"):
+            return
+
+        # 2) Wenn CP gerade CHARGING → keine OK-Meldungen akzeptieren (bereits eingebaut)
         if meta.get("status") == "SUMINISTRANDO" and st in ("OK", "ACTIVATED", "RECOVER"):
             return
 
@@ -282,12 +286,10 @@ class CentralServer:
             "OUT_OF_SERVICE": "PARADO",
             "DISCONNECTED": "DESCONECTADO",
         }
+
         db_state = mapping.get(st)
         if db_state:
             update_cp_status(cp_id, db_state)
-            meta = self.cp_meta.setdefault(cp_id, {})
-            meta.setdefault("location", "-")
-            meta.setdefault("price", 0.0)
             meta["status"] = db_state
 
         self.last_seen[cp_id] = time.time()
@@ -308,14 +310,21 @@ class CentralServer:
         while True:
             await asyncio.sleep(HEARTBEAT_CHECK_PERIOD)
             now = time.time()
+
             for cp_id, ts in list(self.last_seen.items()):
+                meta = self.cp_meta.get(cp_id, {})
+
+                # ❗ WICHTIG: Wenn CP PARADO ist → niemals durch Heartbeat überschreiben
+                if meta.get("status") == "PARADO":
+                    continue
+
+                # Normal heartbeat check
                 if now - ts > HEARTBEAT_TIMEOUT_SEC:
-                    # mark disconnected
                     update_cp_status(cp_id, "DESCONECTADO")
-                    meta = self.cp_meta.setdefault(cp_id, {})
                     meta["status"] = "DESCONECTADO"
 
-    # CENTRAL CLI (Stop/Resume) 
+
+    # CENTRAL CLI (Stop/Resume/Out/Activate) 
     async def central_cli(self):
         loop = asyncio.get_event_loop()
         while True:
@@ -327,26 +336,54 @@ class CentralServer:
             cmd = parts[0].lower()
             target = parts[1].upper() if len(parts) > 1 else None
 
+            # stop all
             if cmd == "stop_all":
-                await self.publish_central_cmd({"cmd":"STOP_ALL"})
+                await self.publish_central_cmd({"cmd": "STOP_ALL"})
                 print("Broadcast STOP_ALL sent.")
+
+            # resume all
             elif cmd == "resume_all":
-                await self.publish_central_cmd({"cmd":"RESUME_ALL"})
+                await self.publish_central_cmd({"cmd": "RESUME_ALL"})
                 print("Broadcast RESUME_ALL sent.")
+
+            # stop cp
             elif cmd == "stop" and target:
-                await self.publish_central_cmd({"cmd":"STOP","cp_id":target})
-                print(f"STOP sent to {target}.")
+                await self.publish_central_cmd({"cmd": "STOP", "cp_id": target})
+
+                
+                w = self.cp_sockets.get(target)
+                if w:
+                    w.write(pack_message("STOP#FORCE"))
+                    await w.drain()
+
+                print(f"{target} STOP sent (session ended, CP stays ACTIVADO).")
+
+            # resume cp
             elif cmd == "resume" and target:
-                await self.publish_central_cmd({"cmd":"RESUME","cp_id":target})
-                print(f"RESUME sent to {target}.")
+                await self.publish_central_cmd({"cmd": "RESUME", "cp_id": target})
+
+                # No DB status change (cp stays activated)
+                print(f"{target} RESUME sent (ready for new start).")
+
+            # out of service
             elif cmd == "out" and target:
-                await self.publish_status("OUT_OF_SERVICE", target)
-                print(f"{target} put OUT_OF_SERVICE.")
+                update_cp_status(target, "PARADO")
+                meta = self.cp_meta.setdefault(target, {})
+                meta["status"] = "PARADO"
+
+                print(f"{target} is OUT_OF_SERVICE (PARADO).")
+
+            # activate
             elif cmd == "activate" and target:
-                await self.publish_status("ACTIVATED", target)
-                print(f"{target} ACTIVATED.")
+                update_cp_status(target, "ACTIVADO")
+                meta = self.cp_meta.setdefault(target, {})
+                meta["status"] = "ACTIVADO"
+
+                print(f"{target} ACTIVATED (back to service).")
+
             else:
                 print("Commands: stop <CP>, resume <CP>, out <CP>, activate <CP>, stop_all, resume_all")
+
 
     # kafka produce helpers
     async def publish_event(self, evt_type: str, **fields):
