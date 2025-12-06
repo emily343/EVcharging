@@ -1,0 +1,10 @@
+# don't commit private keys
+EV_Registry/certs/*key.pem
+EV_Registry/certs/*.key
+
+# Allow public certs
+!EV_Registry/certs/ca_cert.pem
+!EV_Registry/certs/registry.crt
+!EV_Registry/certs/registry.csr
+!EV_Registry/certs/openssl-san.cnf
+!EV_Registry/certs/ca_cert.srl
