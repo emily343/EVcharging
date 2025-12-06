@@ -58,6 +58,16 @@ class Driver:
                     else:
                         asyncio.create_task(self.user_input())
                 
+                # no cp available 
+                if payload == "NO_CP_AVAILABLE":
+                    print(" No charging point available at the moment.")
+                    continue
+
+                elif payload.startswith("DISCONNECTED"):
+                    print("⚠️ CP disconnected. Waiting for new charging point...")
+                    self.current_session = None
+                    continue
+
                 # Start session
                 elif payload.startswith("START#"):
                     _, session_id, cp_id = payload.split("#")
@@ -75,10 +85,17 @@ class Driver:
                     print("=============================\n")
                     self.current_session = None
 
+                elif payload.startswith("STOP_ERROR"):
+                    print("⚠️ Central reports: No active session to stop.")
+                    continue
+
                 # Central forced stop
                 elif payload.startswith("STOP#"):
                     print("🛑 Charging stopped by Central.")
+                    print("🔄 Ready for new start.")
                     self.current_session = None
+                    
+
 
             except asyncio.IncompleteReadError:
                 print("⚠️ Central disconnected — reconnecting…")
