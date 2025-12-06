@@ -1,10 +1,11 @@
-# don't commit private keys
-EV_Registry/certs/*key.pem
-EV_Registry/certs/*.key
+# --- PRIVATE KEYS (never commit) ---
+DiSystems/EV_Registry/certs/*.key
+DiSystems/EV_Registry/certs/*key.pem
+DiSystems/EV_Registry/certs/*.pem
 
-# Allow public certs
-!EV_Registry/certs/ca_cert.pem
-!EV_Registry/certs/registry.crt
-!EV_Registry/certs/registry.csr
-!EV_Registry/certs/openssl-san.cnf
-!EV_Registry/certs/ca_cert.srl
+# --- Allow PUBLIC certs ---
+!DiSystems/EV_Registry/certs/ca_cert.pem
+!DiSystems/EV_Registry/certs/registry.crt
+!DiSystems/EV_Registry/certs/registry.csr
+!DiSystems/EV_Registry/certs/openssl-san.cnf
+!DiSystems/EV_Registry/certs/ca_cert.srl

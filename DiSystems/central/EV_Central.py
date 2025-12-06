@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from colorama import Fore, Style, init as colorama_init
 
+
 from common.protocol_utils import pack_message, unpack_message
 from .central_db import (
     init_db,
@@ -15,6 +16,8 @@ from .central_db import (
     get_free_cp,
     get_all_cps,
     reset_all_cp_status,
+    log_audit,
+    store_cp_key
 )
 
 colorama_init()
@@ -112,6 +115,7 @@ class CentralServer:
                 msg = payload.strip()
                 # print(f"TCP MSG: {msg}")
 
+                ''' deactivate for release 2
                 # CP registration: REGISTER#<cp_id>#<location>#<price>
                 if msg.startswith("REGISTER#"):
                     _, cp_id, location, price = msg.split("#")
@@ -135,7 +139,7 @@ class CentralServer:
                     await writer.drain()
                     await self.publish_event("CP_REGISTERED", cp_id=cp_id, note=f"{location}/{price}")
 
-                    continue
+                    continue '''
 
                 # Driver auth: AUTH_REQ#<driver_id>
                 if msg.startswith("AUTH_REQ#"):
@@ -211,6 +215,108 @@ class CentralServer:
                     meta.update({"status": "ACTIVADO", "session": "-", "driver": "-"})
                     await self.publish_event("SESSION_STOP_REQUESTED", cp_id=cp_id, session_id=session_id)
                     continue
+
+                # (Release 2) CP authentication: AUTH_CP#<cp_id>#<credential>
+                if msg.startswith("AUTH_CP#"):
+                    _, cp_id, credential_plain = msg.split("#")
+
+                    import hashlib, secrets
+                    from central.central_db import get_db_connection
+
+                    # check if CP exists in registry
+                    row = registry_get_cp(cp_id)
+                    if not row:
+                        writer.write(pack_message("AUTH_FAIL#UNKNOWN_CP"))
+                        await writer.drain()
+                        log_audit("EV_Central", "AUTH_FAIL", f"{cp_id}: not registered")
+                        continue
+
+                    # check credential hash
+                    credential_hash = hashlib.sha256(credential_plain.encode()).hexdigest()
+
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT credential_hash, location FROM registry_cp WHERE cp_id=?", (cp_id,))
+                    row2 = cur.fetchone()
+                    conn.close()
+
+                    if not row2 or row2[0] != credential_hash:
+                        writer.write(pack_message("AUTH_FAIL#INVALID_CREDENTIAL"))
+                        await writer.drain()
+                        log_audit("EV_Central", "AUTH_FAIL", f"{cp_id}: invalid credential")
+                        continue
+
+                    # generate symmetric key
+                    sym_key = secrets.token_hex(32)
+                    store_cp_key(cp_id, sym_key)
+
+                    # save CP as connected
+                    self.cp_sockets[cp_id] = writer
+                    self.cp_meta.setdefault(cp_id, {})
+                    self.cp_meta[cp_id].update({
+                        "location": row2[1],
+                        "price": 0.0,           # optional, if Registry stores price
+                        "status": "ACTIVADO",
+                        "session": "-",
+                        "driver": "-",
+                        "kw": 0.0,
+                        "eur": 0.0,
+                    })
+
+                    update_cp_status(cp_id, "ACTIVADO")
+                    self.last_seen[cp_id] = time.time()
+
+                    # save in memory for encryption
+                    self.session_keys[cp_id] = sym_key
+
+                    # audit
+                    log_audit("EV_Central", "AUTH_OK", f"{cp_id} authenticated")
+
+                    # return key to CP
+                    writer.write(pack_message(f"AUTH_OK#{cp_id}#{sym_key}"))
+                    await writer.drain()
+
+                    continue
+
+                # (Release 2) Monitor authentication: AUTH_M#<cp_id>#<credential>
+                if msg.startswith("AUTH_M#"):
+                    _, cp_id, credential_plain = msg.split("#")
+
+                    import hashlib, secrets
+
+                    # Monitors use the same credentials stored in registry_cp
+                    row = registry_get_cp(cp_id)
+                    if not row:
+                        writer.write(pack_message("AUTH_FAIL_M#UNKNOWN"))
+                        await writer.drain()
+                        log_audit("EV_Central", "AUTH_FAIL_M", f"{cp_id}: monitor unknown CP")
+                        continue
+
+                    credential_hash = hashlib.sha256(credential_plain.encode()).hexdigest()
+
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT credential_hash FROM registry_cp WHERE cp_id=?", (cp_id,))
+                    row2 = cur.fetchone()
+                    conn.close()
+
+                    if not row2 or row2[0] != credential_hash:
+                        writer.write(pack_message("AUTH_FAIL_M#BAD_CREDENTIAL"))
+                        await writer.drain()
+                        log_audit("EV_Central", "AUTH_FAIL_M", f"{cp_id}: invalid monitor credential")
+                        continue
+
+                    # generate sym key
+                    sym_key = secrets.token_hex(32)
+                    store_cp_key(cp_id + "_monitor", sym_key)
+
+                    log_audit("EV_Central", "AUTH_OK_M", f"{cp_id} monitor auth ok")
+
+                    writer.write(pack_message(f"AUTH_OK_M#{cp_id}#{sym_key}"))
+                    await writer.drain()
+
+                    continue
+
 
         except Exception as e:
             print(f"Client disconnected {addr}: {e}")

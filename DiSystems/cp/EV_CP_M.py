@@ -34,6 +34,27 @@ class CPMonitor:
                 reader, writer = await asyncio.open_connection(ENGINE_HOST, ENGINE_PORT)
                 print(f"[MON-{CP_ID}] CONNECTED")
 
+                # authentication
+                credential = "supersecret1"   # just for now, later registry 
+
+                auth_msg = f"AUTH_M#{CP_ID}#{credential}"
+                writer.write(pack_message(auth_msg))
+                await writer.drain()
+
+                # wait for auth response from engine 
+                data = await reader.readuntil(b"\x03")
+                lrc = await reader.readexactly(1)
+                payload, ok = unpack_message(data + lrc)
+
+                if not ok or not payload.startswith("AUTH_OK_M"):
+                    print(f"[MON-{CP_ID}] AUTH FAILED:", payload)
+                    continue
+
+                _, cp, sym_key = payload.split("#")
+                self.sym_key = sym_key
+                print(f"[MON-{CP_ID}] AUTH OK — Key received.")
+
+
                 # Recovered
                 if not self.alive:
                     await self.send_status("OK")

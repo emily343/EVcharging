@@ -138,9 +138,7 @@ def reset_all_cp_status(new_status):
     conn.close()
 
 
-# =========================
-# NEUE Hilfsfunktionen für Release 2 (Registry, Keys, Audit)
-# =========================
+
 
 def registry_save_cp(cp_id: str, location: str, credential_hash: str):
     """
