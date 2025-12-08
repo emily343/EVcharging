@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1>EV Charging Dashboard</h1>
+
+<div class="alerts">
+    <h2>Alerts</h2>
+    {% if alerts %}
+        {% for a in alerts %}
+            <div class="alert">
+                <b>{{ a.timestamp }}</b> — {{ a.level }} — {{ a.message }}
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>No alerts.</p>
+    {% endif %}
+</div>
+
+<h2>Charging Points</h2>
+
+<table>
+    <tr>
+        <th>ID</th>
+        <th>Location</th>
+        <th>€/kWh</th>
+        <th>Status</th>
+        <th>Session</th>
+        <th>Driver</th>
+        <th>kW</th>
+        <th>€</th>
+        <th>Actions</th>
+    </tr>
+
+    {% for cp in cps %}
+    <tr>
+        <td>{{ cp.cp_id }}</td>
+        <td>{{ cp.location }}</td>
+        <td>{{ cp.price }}</td>
+        <td class="state {{ cp.status }}">{{ cp.status }}</td>
+        <td>{{ cp.session }}</td>
+        <td>{{ cp.driver }}</td>
+        <td>{{ cp.kw }}</td>
+        <td>{{ cp.eur }}</td>
+
+        <td>
+            <button onclick="sendCmd('stop', '{{ cp.cp_id }}')">STOP</button>
+            <button onclick="sendCmd('resume', '{{ cp.cp_id }}')">RESUME</button>
+            <button onclick="sendCmd('out', '{{ cp.cp_id }}')">OUT</button>
+            <button onclick="sendCmd('activate', '{{ cp.cp_id }}')">ACTIVATE</button>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+
+<script>
+function sendCmd(cmd, cp_id) {
+    fetch(`/cmd/${cmd}/${cp_id}`, { method: "POST" })
+        .then(r => r.json())
+        .then(res => alert(JSON.stringify(res)))
+}
+
+setInterval(() => {
+    location.reload();
+}, 2000);
+</script>
+
+{% endblock %}

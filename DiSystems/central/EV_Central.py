@@ -73,6 +73,7 @@ class CentralServer:
                 STATUS_TOPIC,
                 EVENTS_TOPIC,
                 DRIVER_EVENTS_TOPIC,
+                TOPICS["weather_alerts"],
                 bootstrap_servers=KAFKA_BOOTSTRAP,
                 group_id="central_group",
                 auto_offset_reset="latest",
@@ -334,6 +335,9 @@ class CentralServer:
                 self.on_cp_event(data)
             elif topic == DRIVER_EVENTS_TOPIC:
                 self.on_driver_event(data)
+            elif topic == TOPICS["weather_alerts"]:
+                self.on_weather_alert(data)
+
 
             if time.time() - last_update > 0.5:
                 last_update = time.time()
@@ -524,6 +528,45 @@ class CentralServer:
 
             line = f"{cp_id:8} | {location:10} | {price:6.2f} | {status:13} | {m.get('session','-'):12} | {m.get('driver','-'):7} | {m.get('kw',0.0):6.2f} | {m.get('eur',0.0):6.2f}"
             print(col + line + Style.RESET_ALL)
+
+
+    def on_weather_alert(self, data):
+        city = data.get("city")
+        alert = data.get("alert")
+        print(f"[Central] Weather alert received: {alert} in {city}")
+
+        log_audit("EV_Central", "WEATHER_ALERT_RECEIVED", f"{alert} in {city}")
+
+        # alle CPs in dieser Stadt finden
+        for cp_id, meta in self.cp_meta.items():
+            if meta.get("location") == city:
+                update_cp_status(cp_id, "PARADO")
+                meta["status"] = "PARADO"
+                print(f"[Central] → {cp_id} set to PARADO due to {alert}")
+
+                log_audit("EV_Central", "WEATHER_REACT", f"{cp_id} set PARADO due to {alert} in {city}")
+
+    def get_recent_alerts(limit: int = 50):
+        """
+        Holt die letzten Alerts aus dem Audit-Log.
+        Wir filtern auf WEATHER_* Aktionen.
+        Rückgabe: Liste von Tupeln (timestamp, source, action, details)
+        """
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT timestamp, source, action, details
+            FROM audit_log
+            WHERE action LIKE 'WEATHER_%'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        rows = c.fetchall()
+        conn.close()
+        return rows
 
 
 async def main():

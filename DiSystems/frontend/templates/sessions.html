@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1>Session History</h1>
+
+<table>
+    <tr>
+        <th>Session</th>
+        <th>CP</th>
+        <th>Driver</th>
+        <th>Start</th>
+        <th>End</th>
+        <th>kWh</th>
+        <th>€</th>
+    </tr>
+
+    {% for s in sessions %}
+    <tr>
+        <td>{{ s.session_id }}</td>
+        <td>{{ s.cp_id }}</td>
+        <td>{{ s.driver_id }}</td>
+        <td>{{ s.start_time }}</td>
+        <td>{{ s.end_time }}</td>
+        <td>{{ s.kwh }}</td>
+        <td>{{ s.eur }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+{% endblock %}

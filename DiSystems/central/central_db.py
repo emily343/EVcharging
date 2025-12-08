@@ -6,13 +6,11 @@ DB_FILE = os.path.join(os.path.dirname(__file__), "central.db")
 
 
 def get_db_connection():
-    """Return a new DB connection (needed by Central and other modules)."""
     conn = sqlite3.connect(DB_FILE)
     return conn
 
 
 def init_db():
- 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
@@ -46,7 +44,7 @@ def init_db():
         )
     """)
 
-    # NEU: Tabelle für registrierte CPs (von EV_Registry verwaltet)
+   
     c.execute("""
         CREATE TABLE IF NOT EXISTS registry_cp (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,7 +56,7 @@ def init_db():
         )
     """)
 
-    # NEU: Tabelle für symmetrische Schlüssel pro CP (von EV_Central verwaltet)
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS cp_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +66,7 @@ def init_db():
         )
     """)
 
-    # audit-log table 
+    # Audit log
     c.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,12 +77,22 @@ def init_db():
         )
     """)
 
+    
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS weather_alerts (
+            alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            cp_id TEXT,
+            alert_type TEXT,
+            message TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 
-
-
+#cps
 def save_cp(cp_id, location, price, status="DESCONECTADO"):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -138,13 +146,8 @@ def reset_all_cp_status(new_status):
     conn.close()
 
 
-
-
+#registry functions
 def registry_save_cp(cp_id: str, location: str, credential_hash: str):
-    """
-    Speichert einen registrierten CP in der Tabelle registry_cp.
-    Wird vom EV_Registry-Modul benutzt.
-    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
@@ -159,16 +162,9 @@ def registry_save_cp(cp_id: str, location: str, credential_hash: str):
 
 
 def registry_deactivate_cp(cp_id: str) -> bool:
-    """
-    Setzt active = 0 für einen CP.
-    Gibt True zurück, wenn ein Datensatz betroffen war, sonst False.
-    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute(
-        "UPDATE registry_cp SET active = 0 WHERE cp_id = ?",
-        (cp_id,)
-    )
+    c.execute("UPDATE registry_cp SET active = 0 WHERE cp_id=?", (cp_id,))
     changed = (c.rowcount > 0)
     conn.commit()
     conn.close()
@@ -176,10 +172,6 @@ def registry_deactivate_cp(cp_id: str) -> bool:
 
 
 def registry_get_cp(cp_id: str):
-    """
-    Holt einen registrierten CP (für Debug/Checks).
-    Gibt ein Tupel (cp_id, location, active) oder None zurück.
-    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
@@ -188,17 +180,13 @@ def registry_get_cp(cp_id: str):
     )
     row = c.fetchone()
     conn.close()
-    return row  # None oder (cp_id, location, active)
+    return row
 
 
+#cp key management 
 def store_cp_key(cp_id: str, sym_key: str):
-    """
-    Speichert oder aktualisiert den symmetrischen Schlüssel zu einem CP.
-    Wird von EV_Central nach erfolgreicher Authentifizierung benutzt.
-    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # REPLACE: überschreibt vorhandenen Eintrag für cp_id
     c.execute(
         """
         INSERT INTO cp_keys (cp_id, sym_key, created_at)
@@ -214,25 +202,17 @@ def store_cp_key(cp_id: str, sym_key: str):
 
 
 def get_cp_key(cp_id: str) -> str | None:
-    """
-    Gibt den gespeicherten symmetrischen Schlüssel eines CP zurück oder None.
-    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute(
-        "SELECT sym_key FROM cp_keys WHERE cp_id = ?",
-        (cp_id,)
-    )
+    c.execute("SELECT sym_key FROM cp_keys WHERE cp_id=?", (cp_id,))
     row = c.fetchone()
     conn.close()
     return row[0] if row else None
 
 
+
+# audit log
 def log_audit(source: str, action: str, details: str):
-    """
-    Fügt einen Eintrag ins Audit-Log ein.
-    Wird von Central, Registry, EV_W etc. benutzt.
-    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
@@ -244,3 +224,32 @@ def log_audit(source: str, action: str, details: str):
     )
     conn.commit()
     conn.close()
+
+
+# Weather Alerts 
+def add_weather_alert(cp_id: str, alert_type: str, message: str):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO weather_alerts (cp_id, alert_type, message)
+        VALUES (?, ?, ?)
+        """,
+        (cp_id, alert_type, message)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_recent_alerts(limit=20):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT alert_id, timestamp, cp_id, alert_type, message
+        FROM weather_alerts
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows

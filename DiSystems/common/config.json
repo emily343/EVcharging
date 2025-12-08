@@ -6,6 +6,7 @@
     "cp_events": "cp_events",
     "driver_events": "driver_events",
     "central_cmd": "central_cmd",
-    "alerts": "alerts"   
+    "alerts": "alerts",
+    "weather_alerts": "weather_alerts"   
   }
 }

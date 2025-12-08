@@ -1,0 +1,45 @@
+body {
+    background: #f6f6f6;
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+}
+
+.navbar {
+    background: #333;
+    padding: 12px;
+}
+
+.navbar a {
+    color: white;
+    margin-right: 20px;
+    text-decoration: none;
+}
+
+.content {
+    padding: 20px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+}
+
+table th, table td {
+    border: 1px solid #ccc;
+    padding: 8px;
+}
+
+.state.ACTIVADO { color: green; font-weight: bold; }
+.state.SUMINISTRANDO { color: goldenrod; font-weight: bold; }
+.state.AVERIADO { color: red; font-weight: bold; }
+.state.PARADO { color: purple; font-weight: bold; }
+.state.DESCONECTADO { color: gray; font-weight: bold; }
+
+.alert {
+    background: #ffe0e0;
+    border-left: 4px solid red;
+    padding: 8px;
+    margin-bottom: 6px;
+}
