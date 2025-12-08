@@ -9,53 +9,72 @@ with open(CONFIG_PATH) as f:
 KAFKA_BOOTSTRAP = CONFIG["kafka_bootstrap"]
 STATUS_TOPIC = CONFIG["topics"]["cp_status"]
 
-if len(sys.argv) < 4:
-    print("Usage: python -m cp.EV_CP_M <ENGINE_HOST> <ENGINE_PORT> <CP_ID>")
+if len(sys.argv) < 5:
+    print("Usage: python -m cp.EV_CP_M <ENGINE_HOST> <ENGINE_PORT> <MONITOR_ID> <CREDENTIAL>")
     sys.exit(1)
 
 ENGINE_HOST = sys.argv[1]
 ENGINE_PORT = int(sys.argv[2])
-CP_ID = sys.argv[3]
+MONITOR_ID = sys.argv[3]
+CREDENTIAL = sys.argv[4]     # comes from Registry
+
+
+CENTRAL_HOST = "127.0.0.1"
+CENTRAL_PORT = 9002
 
 
 class CPMonitor:
     def __init__(self):
         self.kafka = None
         self.alive = False
+        self.central_writer = None
+        self.central_reader = None
 
+    # --- 1) AUTHENTICATE WITH CENTRAL ---
+    async def auth_with_central(self):
+        while True:
+            try:
+                r, w = await asyncio.open_connection(CENTRAL_HOST, CENTRAL_PORT)
+                self.central_reader = r
+                self.central_writer = w
+
+                # send auth
+                auth_msg = f"AUTH_MON#{MONITOR_ID}#{CREDENTIAL}"
+                w.write(pack_message(auth_msg))
+                await w.drain()
+
+                # wait for response
+                data = await r.readuntil(b"\x03")
+                lrc = await r.readexactly(1)
+                payload, ok = unpack_message(data + lrc)
+
+                if ok and payload.startswith("AUTH_MON_OK"):
+                    print(f"[MON-{MONITOR_ID}] Authenticated at Central")
+                    return
+                else:
+                    print(f"[MON-{MONITOR_ID}] Central auth failed: {payload}")
+                    await asyncio.sleep(2)
+
+            except Exception as e:
+                print(f"[MON-{MONITOR_ID}] Central not reachable: {e}")
+                await asyncio.sleep(2)
+
+    # --- 2) MAIN LOOP ---
     async def start(self):
         self.kafka = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
         await self.kafka.start()
 
-        print(f"[MON-{CP_ID}] Monitor started for {ENGINE_HOST}:{ENGINE_PORT}")
+        # AUTH with Central
+        await self.auth_with_central()
 
+        print(f"[MON-{MONITOR_ID}] Monitor running, engine = {ENGINE_HOST}:{ENGINE_PORT}")
+
+        # HEARTBEAT LOOP
         while True:
             try:
                 reader, writer = await asyncio.open_connection(ENGINE_HOST, ENGINE_PORT)
-                print(f"[MON-{CP_ID}] CONNECTED")
+                print(f"[MON-{MONITOR_ID}] CONNECTED to Engine")
 
-                # authentication
-                credential = "supersecret1"   # just for now, later registry 
-
-                auth_msg = f"AUTH_M#{CP_ID}#{credential}"
-                writer.write(pack_message(auth_msg))
-                await writer.drain()
-
-                # wait for auth response from engine 
-                data = await reader.readuntil(b"\x03")
-                lrc = await reader.readexactly(1)
-                payload, ok = unpack_message(data + lrc)
-
-                if not ok or not payload.startswith("AUTH_OK_M"):
-                    print(f"[MON-{CP_ID}] AUTH FAILED:", payload)
-                    continue
-
-                _, cp, sym_key = payload.split("#")
-                self.sym_key = sym_key
-                print(f"[MON-{CP_ID}] AUTH OK — Key received.")
-
-
-                # Recovered
                 if not self.alive:
                     await self.send_status("OK")
                     self.alive = True
@@ -67,28 +86,28 @@ class CPMonitor:
                     try:
                         resp = await asyncio.wait_for(reader.readexactly(1), timeout=2)
                     except asyncio.TimeoutError:
-                        print(f"[MON-{CP_ID}] TIMEOUT")
+                        print(f"[MON-{MONITOR_ID}] TIMEOUT")
                         raise ConnectionError
 
-                    if resp != b'\x06':
-                        print(f"[MON-{CP_ID}] BAD ACK")
+                    if resp != b"\x06":
+                        print(f"[MON-{MONITOR_ID}] BAD ACK")
                         raise ConnectionError
 
-                  
                     await self.send_status("OK")
 
                     await asyncio.sleep(2)
 
             except:
                 if self.alive:
-                    print(f"[MON-{CP_ID}] LOST ENGINE")
+                    print(f"[MON-{MONITOR_ID}] LOST ENGINE")
                     await self.send_status("DISCONNECTED")
                     self.alive = False
+
                 await asyncio.sleep(2)
 
     async def send_status(self, status):
-        msg = {"cp_id": CP_ID, "status": status}
-        print(f"[MON-{CP_ID}] STATUS:", msg)
+        msg = {"cp_id": MONITOR_ID, "status": status}
+        print(f"[MON-{MONITOR_ID}] STATUS:", msg)
         await self.kafka.send_and_wait(STATUS_TOPIC, json.dumps(msg).encode())
 
 

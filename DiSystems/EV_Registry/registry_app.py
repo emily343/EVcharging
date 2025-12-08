@@ -11,7 +11,11 @@ from central.central_db import (
     log_audit
 )
 
+BASE_DIR = os.path.dirname(__file__)
+CERT_DIR = os.path.join(BASE_DIR, "certs")
 app = Flask(__name__)
+
+
 
 # helper
 def hash_credential(secret_plain: str) -> str:
@@ -94,13 +98,15 @@ if __name__ == "__main__":
     init_db()
     print("EV_Registry running on https://localhost:5001")
     
-    # activate SSL later here
+    
     app.run(
-        host="0.0.0.0",
-        port=5001,
-        debug=True,
-        ssl_context=(
-            "certs/registry.crt",
-            "certs/registry.key"
-        )
+    host="0.0.0.0",
+    port=5001,
+    debug=True,
+    ssl_context=(
+        os.path.join(CERT_DIR, "registry.crt"),
+        os.path.join(CERT_DIR, "registry.key")
     )
+)
+
+    

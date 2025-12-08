@@ -86,29 +86,67 @@ class CPEngine:
                 await self.send_status("DISCONNECTED")
                 await asyncio.sleep(2)
 
-    # TCP messages from Central
+    # TCP messages from Central (encrypted after AUTH_CP)
     async def listen_central(self):
+        from common.crypto_utils import aes_decrypt
+
         try:
             while True:
                 data = await self.central_reader.readuntil(b'\x03')
                 lrc = await self.central_reader.readexactly(1)
                 payload, ok = unpack_message(data + lrc)
-                if not ok:
+                if not ok or payload is None:
                     continue
 
+                #encrypted command
+                if payload.startswith("ENC#"):
+                    _, encrypted_json = payload.split("#", 1)
+
+                    try:
+                        decrypted = aes_decrypt(self.sym_key, encrypted_json)
+                    except Exception as e:
+                        print(f"[{CP_ID}] ❌ Decryption failed:", e)
+                        continue
+
+                    print(f"[{CP_ID}] 🔐 Decrypted:", decrypted)
+
+                    # start
+                    if decrypted.startswith("START#"):
+                        _, session, driver = decrypted.split("#")
+                        self.session = session
+                        self.driver = driver
+                        asyncio.create_task(self.start_supply())
+                        continue
+
+                    # stop
+                    if decrypted.startswith("STOP#"):
+                        _, session_id = decrypted.split("#")
+                        if self.session == session_id:
+                            self.supplying = False
+                        continue
+
+                    # unknown
+                    print(f"[{CP_ID}] Unknown decrypted message:", decrypted)
+                    continue
+
+
+                #plaintext command 
                 if payload.startswith("START#"):
                     _, session, driver = payload.split("#")
                     self.session = session
                     self.driver = driver
                     asyncio.create_task(self.start_supply())
+                    continue
 
-                elif payload.startswith("STOP#"):
+                if payload.startswith("STOP#"):
                     self.supplying = False
+                    continue
 
-        except:
-            print(f"[{CP_ID}] ⚠️ Lost connection to Central")
+        except Exception as e:
+            print(f"[{CP_ID}] ⚠️ Lost connection to Central:", e)
             await self.send_status("DISCONNECTED")
             asyncio.create_task(self.connect_central())
+
 
     # Charging Simulation 
     async def start_supply(self):
