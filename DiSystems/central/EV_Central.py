@@ -20,7 +20,8 @@ from .central_db import (
     reset_all_cp_status,
     log_audit,
     store_cp_key,
-    get_cp_key
+    get_cp_key,
+    get_db_connection
 )
 
 colorama_init()
@@ -29,14 +30,15 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "common", "config.js
 with open(CONFIG_PATH) as f:
     CONFIG = json.load(f)
 
-# Kafka topics
 KAFKA_BOOTSTRAP = CONFIG["kafka_bootstrap"]
 TOPICS = CONFIG["topics"]
+
 TELEMETRY_TOPIC = TOPICS["telemetry"]
 STATUS_TOPIC = TOPICS["cp_status"]
 EVENTS_TOPIC = TOPICS["cp_events"]
 DRIVER_EVENTS_TOPIC = TOPICS["driver_events"]
 CENTRAL_CMD_TOPIC = TOPICS["central_cmd"]
+WEATHER_TOPIC = TOPICS["weather_alerts"]
 
 HEARTBEAT_TIMEOUT_SEC = 10
 HEARTBEAT_CHECK_PERIOD = 5
@@ -51,18 +53,18 @@ class CentralServer:
         self.host = host
         self.port = port
 
-        # NEW: session keys for encryption
+        # symmetric AES keys per CP
         self.session_keys: Dict[str, str] = {}
 
-        # TCP sockets
+        # tcp connections
         self.cp_sockets: Dict[str, asyncio.StreamWriter] = {}
         self.driver_sockets: Dict[str, asyncio.StreamWriter] = {}
         self.sessions: Dict[str, Dict] = {}
 
-        # CP telemetry/meta
+        # state + telemetry
         self.cp_meta: Dict[str, Dict] = {}
 
-        # heartbeat timestamps
+        # heartbeat
         self.last_seen: Dict[str, float] = {}
 
         # Kafka
@@ -73,7 +75,7 @@ class CentralServer:
                 STATUS_TOPIC,
                 EVENTS_TOPIC,
                 DRIVER_EVENTS_TOPIC,
-                TOPICS["weather_alerts"],
+                WEATHER_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP,
                 group_id="central_group",
                 auto_offset_reset="latest",
@@ -98,6 +100,9 @@ class CentralServer:
         async with server:
             await server.serve_forever()
 
+    # ---------------------------
+    # TCP CLIENT HANDLING
+    # ---------------------------
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info("peername")
         print(f"TCP connection from {addr}")
@@ -115,104 +120,96 @@ class CentralServer:
 
                 msg = payload.strip()
 
-               
-                # authentication cp
+                # ---------------------------
+                # AUTH CP
+                # ---------------------------
                 if msg.startswith("AUTH_CP#"):
                     _, cp_id, credential_plain = msg.split("#")
-                    import hashlib, secrets
-                    from .central_db import get_db_connection
 
-                    row = registry_get_cp(cp_id)
-                    if not row:
+                    import hashlib, secrets
+
+                    db_row = registry_get_cp(cp_id)
+                    if not db_row:
                         writer.write(pack_message("AUTH_FAIL#UNKNOWN_CP"))
                         await writer.drain()
-                        log_audit("EV_Central", "AUTH_FAIL", f"{cp_id}: not in registry")
                         continue
 
-                    credential_hash = hashlib.sha256(credential_plain.encode()).hexdigest()
+                    hashed = hashlib.sha256(credential_plain.encode()).hexdigest()
 
                     conn = get_db_connection()
                     cur = conn.cursor()
                     cur.execute("SELECT credential_hash, location FROM registry_cp WHERE cp_id=?", (cp_id,))
-                    row2 = cur.fetchone()
+                    row = cur.fetchone()
                     conn.close()
 
-                    if not row2 or row2[0] != credential_hash:
-                        writer.write(pack_message("AUTH_FAIL#INVALID_CREDENTIAL"))
+                    if not row or row[0] != hashed:
+                        writer.write(pack_message("AUTH_FAIL#BAD_CREDENTIAL"))
                         await writer.drain()
-                        log_audit("EV_Central", "AUTH_FAIL", f"{cp_id}: invalid credential")
                         continue
 
-                    # generate symmetric AES key
                     sym_key = secrets.token_hex(32)
                     store_cp_key(cp_id, sym_key)
                     self.session_keys[cp_id] = sym_key
 
-                    # register TCP socket
                     self.cp_sockets[cp_id] = writer
-
-                    # initialize meta
                     self.cp_meta.setdefault(cp_id, {})
                     self.cp_meta[cp_id].update({
-                        "location": row2[1],
+                        "location": row[1],
                         "price": 0.0,
                         "status": "ACTIVADO",
-                        "session": "-",
                         "driver": "-",
+                        "session": "-",
                         "kw": 0.0,
                         "eur": 0.0,
                     })
 
-                    self.last_seen[cp_id] = time.time()
                     update_cp_status(cp_id, "ACTIVADO")
-
-                    log_audit("EV_Central", "AUTH_OK", f"{cp_id} authenticated")
+                    self.last_seen[cp_id] = time.time()
 
                     writer.write(pack_message(f"AUTH_OK#{cp_id}#{sym_key}"))
                     await writer.drain()
                     continue
 
-     
-                # authentication monitor 
+                # ---------------------------
+                # AUTH MONITOR
+                # ---------------------------
                 if msg.startswith("AUTH_MON#"):
                     _, mon_id, credential_plain = msg.split("#")
 
                     import hashlib
-                    from .central_db import registry_get_cp
 
-                    row = registry_get_cp(mon_id)
-                    if not row:
+                    db_row = registry_get_cp(mon_id)
+                    if not db_row:
                         writer.write(pack_message("AUTH_MON_FAIL#UNKNOWN"))
                         await writer.drain()
-                        log_audit("EV_Central", "AUTH_MON_FAIL", f"{mon_id}: not found")
                         continue
 
-                    credential_hash = hashlib.sha256(credential_plain.encode()).hexdigest()
+                    hashed = hashlib.sha256(credential_plain.encode()).hexdigest()
 
                     conn = get_db_connection()
                     cur = conn.cursor()
                     cur.execute("SELECT credential_hash FROM registry_cp WHERE cp_id=?", (mon_id,))
-                    db_hash = cur.fetchone()
+                    row = cur.fetchone()
                     conn.close()
 
-                    if not db_hash or db_hash[0] != credential_hash:
-                        writer.write(pack_message("AUTH_MON_FAIL#INVALID"))
+                    if not row or row[0] != hashed:
+                        writer.write(pack_message("AUTH_MON_FAIL#BAD_CRED"))
                         await writer.drain()
-                        log_audit("EV_Central", "AUTH_MON_FAIL", f"{mon_id}: wrong credential")
                         continue
 
                     writer.write(pack_message(f"AUTH_MON_OK#{mon_id}"))
                     await writer.drain()
-                    log_audit("EV_Central", "AUTH_MON_OK", mon_id)
                     continue
 
-               
-                # register (after successful AUTH only)
+                # ---------------------------
+                # REGISTER CP
+                # ---------------------------
                 if msg.startswith("REGISTER#"):
                     _, cp_id, location, price = msg.split("#")
                     price = float(price)
 
                     self.cp_sockets[cp_id] = writer
+                    save_cp(cp_id, location, price, "ACTIVADO")
 
                     self.cp_meta.setdefault(cp_id, {})
                     self.cp_meta[cp_id].update({
@@ -225,40 +222,35 @@ class CentralServer:
                         "session": "-",
                     })
 
-                    save_cp(cp_id, location, price, "ACTIVADO")
-                    self.last_seen[cp_id] = time.time()
-
                     writer.write(pack_message(f"ACK#REGISTER#{cp_id}#OK"))
                     await writer.drain()
-                    await self.publish_event("CP_REGISTERED", cp_id=cp_id)
                     continue
 
-                #driver auth
+                # ---------------------------
+                # DRIVER AUTH
+                # ---------------------------
                 if msg.startswith("AUTH_REQ#"):
                     _, driver_id = msg.split("#")
                     self.driver_sockets[driver_id] = writer
                     writer.write(pack_message(f"AUTH_RESP#{driver_id}#ALLOW"))
                     await writer.drain()
-                    await self.publish_driver_event("DRIVER_AUTH_OK", driver_id=driver_id)
                     continue
 
-                
-                # start request (Driver → Central)
+                # ---------------------------
+                # START REQUEST
+                # ---------------------------
                 if msg.startswith("START_REQ#"):
                     _, driver_id = msg.split("#")
-                    cp_id = get_free_cp()
 
+                    cp_id = get_free_cp()
                     if not cp_id:
                         writer.write(pack_message("NO_CP_AVAILABLE"))
                         await writer.drain()
                         continue
 
-                    info = self.cp_meta.get(cp_id, {})
                     session_id = f"S-{driver_id}-{cp_id}"
                     self.sessions[session_id] = {"driver_id": driver_id, "cp_id": cp_id}
 
-                    # persist session
-                    from .central_db import get_db_connection
                     conn = get_db_connection()
                     cur = conn.cursor()
                     cur.execute(
@@ -268,31 +260,28 @@ class CentralServer:
                     conn.commit()
                     conn.close()
 
-                    # encrypted START → CP
                     cpw = self.cp_sockets.get(cp_id)
                     if cpw:
-                        sym_key = self.session_keys.get(cp_id)
-                        encrypted = aes_encrypt(sym_key, f"START#{session_id}#{driver_id}")
+                        sym = self.session_keys.get(cp_id)
+                        encrypted = aes_encrypt(sym, f"START#{session_id}#{driver_id}")
                         cpw.write(pack_message(f"ENC#{encrypted}"))
                         await cpw.drain()
 
-                    # notify driver
                     writer.write(pack_message(f"START#{session_id}#{cp_id}"))
                     await writer.drain()
 
-                    # update states
                     update_cp_status(cp_id, "SUMINISTRANDO")
-                    info.update({"status": "SUMINISTRANDO", "driver": driver_id, "session": session_id})
-                    self.last_seen[cp_id] = time.time()
-
-                    await self.publish_event("SESSION_STARTED", cp_id=cp_id, session_id=session_id)
+                    self.cp_meta[cp_id]["status"] = "SUMINISTRANDO"
+                    self.cp_meta[cp_id]["driver"] = driver_id
+                    self.cp_meta[cp_id]["session"] = session_id
                     continue
 
-                #stop request
+                # ---------------------------
+                # STOP REQUEST
+                # ---------------------------
                 if msg.startswith("STOP_REQ#"):
                     _, session_id = msg.split("#")
                     session = self.sessions.get(session_id)
-
                     if not session:
                         continue
 
@@ -300,155 +289,136 @@ class CentralServer:
                     cpw = self.cp_sockets.get(cp_id)
 
                     if cpw:
-                        sym_key = self.session_keys.get(cp_id)
-                        encrypted = aes_encrypt(sym_key, f"STOP#{session_id}")
-                        cpw.write(pack_message(f"ENC#{encrypted}"))
+                        sym = self.session_keys.get(cp_id)
+                        enc = aes_encrypt(sym, f"STOP#{session_id}")
+                        cpw.write(pack_message(f"ENC#{enc}"))
                         await cpw.drain()
 
                     update_cp_status(cp_id, "ACTIVADO")
-                    self.cp_meta[cp_id].update({
-                        "status": "ACTIVADO",
-                        "session": "-",
-                        "driver": "-",
-                    })
+                    meta = self.cp_meta[cp_id]
+                    meta.update({"status": "ACTIVADO", "driver": "-", "session": "-"})
 
-                    await self.publish_event("SESSION_STOP_REQUESTED", cp_id=cp_id, session_id=session_id)
                     continue
 
         except Exception as e:
             print(f"Client disconnected {addr}: {e}")
 
-    #kafka loops 
+    # ---------------------------
+    # KAFKA LOOP
+    # ---------------------------
     async def kafka_loop(self):
         consumer = self.kafka_consumers[0]
-        last_update = 0
-
         async for rec in consumer:
             topic = rec.topic
-            data = json.loads(rec.value.decode())
+            try:
+                data = json.loads(rec.value.decode())
+            except:
+                continue
 
             if topic == TELEMETRY_TOPIC:
                 self.on_telemetry(data)
             elif topic == STATUS_TOPIC:
                 self.on_status(data)
-            elif topic == EVENTS_TOPIC:
-                self.on_cp_event(data)
-            elif topic == DRIVER_EVENTS_TOPIC:
-                self.on_driver_event(data)
-            elif topic == TOPICS["weather_alerts"]:
+            elif topic == WEATHER_TOPIC:
                 self.on_weather_alert(data)
 
-
-            if time.time() - last_update > 0.5:
-                last_update = time.time()
-
+    # ---------------------------
+    # TELEMETRY
+    # ---------------------------
     def on_telemetry(self, data):
-        cp_id = data.get("cp_id")
-        if not cp_id:
+        cp = data.get("cp_id")
+        if not cp:
             return
 
-        meta = self.cp_meta.setdefault(cp_id, {})
+        meta = self.cp_meta.setdefault(cp, {})
         meta["kw"] = float(data.get("kw", 0.0))
         meta["eur"] = float(data.get("eur", 0.0))
-
         if "driver" in data:
             meta["driver"] = data["driver"]
         if "session_id" in data:
             meta["session"] = data["session_id"]
 
         status = data.get("status")
-
         if status == "CHARGING":
-            update_cp_status(cp_id, "SUMINISTRANDO")
+            update_cp_status(cp, "SUMINISTRANDO")
             meta["status"] = "SUMINISTRANDO"
 
         elif status == "FINISHED":
-            session_id = data.get("session_id", "-")
-            kwh = float(data.get("kw", 0.0))
-            eur = float(data.get("eur", 0.0))
-
-            from .central_db import get_db_connection
+            session_id = meta.get("session", "-")
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute(
                 "UPDATE sessions SET end_time=?, kwh=?, eur=? WHERE session_id=?",
-                (time.time(), kwh, eur, session_id),
+                (time.time(), meta["kw"], meta["eur"], session_id),
             )
             conn.commit()
             conn.close()
 
-            sess = self.sessions.get(session_id)
-            if sess:
-                d_id = sess["driver_id"]
-                dw = self.driver_sockets.get(d_id)
-                if dw:
-                    dw.write(pack_message(f"TICKET#{session_id}#{kwh}#{eur}"))
-                    asyncio.create_task(dw.drain())
+            update_cp_status(cp, "ACTIVADO")
+            meta.update({"status": "ACTIVADO", "session": "-", "driver": "-", "kw": 0.0, "eur": 0.0})
 
-            update_cp_status(cp_id, "ACTIVADO")
-            meta.update({
-                "status": "ACTIVADO",
-                "session": "-",
-                "driver": "-",
-                "kw": 0.0,
-                "eur": 0.0,
-            })
+        self.last_seen[cp] = time.time()
 
-        elif status == "IDLE":
-            update_cp_status(cp_id, "ACTIVADO")
-            meta["status"] = "ACTIVADO"
-
-        self.last_seen[cp_id] = time.time()
-
+    # ---------------------------
+    # STATUS
+    # ---------------------------
     def on_status(self, data):
-        cp_id = data.get("cp_id")
-        if not cp_id:
+        cp = data.get("cp_id")
+        if not cp:
             return
 
         st = data.get("status", "").upper()
-        meta = self.cp_meta.setdefault(cp_id, {})
 
         mapping = {
             "OK": "ACTIVADO",
-            "ACTIVATED": "ACTIVADO",
-            "RECOVER": "ACTIVADO",
             "FAULT": "AVERIADO",
             "OUT_OF_SERVICE": "PARADO",
             "DISCONNECTED": "DESCONECTADO",
+            "RECOVER": "ACTIVADO",
         }
 
         if st in mapping:
-            update_cp_status(cp_id, mapping[st])
-            meta["status"] = mapping[st]
+            update_cp_status(cp, mapping[st])
+            self.cp_meta.setdefault(cp, {})["status"] = mapping[st]
 
-        self.last_seen[cp_id] = time.time()
+        self.last_seen[cp] = time.time()
 
-    def on_cp_event(self, data):
-        cp_id = data.get("cp_id")
-        if cp_id:
-            self.last_seen[cp_id] = time.time()
+    # ---------------------------
+    # WEATHER ALERT
+    # ---------------------------
+    def on_weather_alert(self, data):
+        city = data.get("city")
+        alert = data.get("alert")
 
-    def on_driver_event(self, data):
-        pass
+        print(f"[Central] Weather Alert: {alert} in {city}")
+        log_audit("EV_Central", "WEATHER_ALERT", f"{alert} in {city}")
 
-    #heartbeat watcher
+        # disable charging points in that city
+        for cp_id, meta in self.cp_meta.items():
+            if meta.get("location") == city:
+                update_cp_status(cp_id, "PARADO")
+                meta["status"] = "PARADO"
+                print(f"[Central] → {cp_id} set to PARADO due to {alert}")
+
+    # ---------------------------
+    # HEARTBEAT WATCHER
+    # ---------------------------
     async def heartbeat_watcher(self):
         while True:
             await asyncio.sleep(HEARTBEAT_CHECK_PERIOD)
             now = time.time()
 
-            for cp_id, ts in list(self.last_seen.items()):
-                meta = self.cp_meta.get(cp_id, {})
-                if meta.get("status") == "PARADO":
-                    continue
-
+            for cp, ts in list(self.last_seen.items()):
                 if now - ts > HEARTBEAT_TIMEOUT_SEC:
-                    update_cp_status(cp_id, "DESCONECTADO")
-                    meta["status"] = "DESCONECTADO"
+                    update_cp_status(cp, "DESCONECTADO")
+                    self.cp_meta[cp]["status"] = "DESCONECTADO"
 
-    #central cli
+    # ---------------------------
+    # CLI
+    # ---------------------------
     async def central_cli(self):
         loop = asyncio.get_event_loop()
+
         while True:
             cmdline = await loop.run_in_executor(None, input, "central> ")
             parts = cmdline.strip().split()
@@ -456,117 +426,40 @@ class CentralServer:
                 continue
 
             cmd = parts[0].lower()
-            target = parts[1].upper() if len(parts) > 1 else None
+            cp = parts[1].upper() if len(parts) > 1 else None
 
             if cmd == "stop_all":
-                await self.publish_central_cmd({"cmd": "STOP_ALL"})
+                await self.kafka_producer.send_and_wait(CENTRAL_CMD_TOPIC, b'{"cmd":"STOP_ALL"}')
                 print("STOP_ALL sent.")
 
             elif cmd == "resume_all":
-                await self.publish_central_cmd({"cmd": "RESUME_ALL"})
+                await self.kafka_producer.send_and_wait(CENTRAL_CMD_TOPIC, b'{"cmd":"RESUME_ALL"}')
                 print("RESUME_ALL sent.")
 
-            elif cmd == "stop" and target:
-                await self.publish_central_cmd({"cmd": "STOP", "cp_id": target})
-                print(f"{target} STOP sent.")
+            elif cmd == "stop" and cp:
+                await self.kafka_producer.send_and_wait(
+                    CENTRAL_CMD_TOPIC,
+                    json.dumps({"cmd": "STOP", "cp_id": cp}).encode()
+                )
+                print(f"{cp} STOP sent.")
 
-            elif cmd == "resume" and target:
-                await self.publish_central_cmd({"cmd": "RESUME", "cp_id": target})
-                print(f"{target} RESUME sent.")
+            elif cmd == "resume" and cp:
+                await self.kafka_producer.send_and_wait(
+                    CENTRAL_CMD_TOPIC,
+                    json.dumps({"cmd": "RESUME", "cp_id": cp}).encode()
+                )
+                print(f"{cp} RESUME sent.")
 
-            elif cmd == "out" and target:
-                update_cp_status(target, "PARADO")
-                print(f"{target} OUT OF SERVICE.")
+            elif cmd == "out" and cp:
+                update_cp_status(cp, "PARADO")
+                print(f"{cp} OUT OF SERVICE")
 
-            elif cmd == "activate" and target:
-                update_cp_status(target, "ACTIVADO")
-                print(f"{target} ACTIVATED.")
+            elif cmd == "activate" and cp:
+                update_cp_status(cp, "ACTIVADO")
+                print(f"{cp} ACTIVATED")
 
             else:
                 print("Commands: stop <CP>, resume <CP>, out <CP>, activate <CP>, stop_all, resume_all")
-
-   #kafka produce helpers
-    async def publish_event(self, evt_type, **fields):
-        await self.kafka_producer.send_and_wait(
-            EVENTS_TOPIC,
-            json.dumps({"type": evt_type, **fields}).encode()
-        )
-
-    async def publish_driver_event(self, evt_type, driver_id, **fields):
-        await self.kafka_producer.send_and_wait(
-            DRIVER_EVENTS_TOPIC,
-            json.dumps({"type": evt_type, "driver_id": driver_id, **fields}).encode()
-        )
-
-    async def publish_central_cmd(self, cmd_obj):
-        await self.kafka_producer.send_and_wait(
-            CENTRAL_CMD_TOPIC,
-            json.dumps(cmd_obj).encode()
-        )
-
-    def print_dashboard(self):
-        clear()
-        print(f"{Fore.CYAN}=== EV CHARGING NETWORK DASHBOARD ==={Style.RESET_ALL}")
-        rows = get_all_cps()
-        meta = self.cp_meta
-
-        colors = {
-            "ACTIVADO": Fore.GREEN,
-            "SUMINISTRANDO": Fore.YELLOW,
-            "AVERIADO": Fore.RED,
-            "PARADO": Fore.MAGENTA,
-            "DESCONECTADO": Fore.LIGHTBLACK_EX
-        }
-
-        header = f"{'CP':8} | {'Location':10} | {'€/kWh':>6} | {'State':13} | {'Sess':12} | {'Driver':7} | {'kW':>6} | {'€':>6}"
-        print(header)
-        print("-" * len(header))
-
-        for (cp_id, location, price, status) in rows:
-            m = meta.get(cp_id, {})
-            col = colors.get(status, Fore.WHITE)
-
-            line = f"{cp_id:8} | {location:10} | {price:6.2f} | {status:13} | {m.get('session','-'):12} | {m.get('driver','-'):7} | {m.get('kw',0.0):6.2f} | {m.get('eur',0.0):6.2f}"
-            print(col + line + Style.RESET_ALL)
-
-
-    def on_weather_alert(self, data):
-        city = data.get("city")
-        alert = data.get("alert")
-        print(f"[Central] Weather alert received: {alert} in {city}")
-
-        log_audit("EV_Central", "WEATHER_ALERT_RECEIVED", f"{alert} in {city}")
-
-        # alle CPs in dieser Stadt finden
-        for cp_id, meta in self.cp_meta.items():
-            if meta.get("location") == city:
-                update_cp_status(cp_id, "PARADO")
-                meta["status"] = "PARADO"
-                print(f"[Central] → {cp_id} set to PARADO due to {alert}")
-
-                log_audit("EV_Central", "WEATHER_REACT", f"{cp_id} set PARADO due to {alert} in {city}")
-
-    def get_recent_alerts(limit: int = 50):
-        """
-        Holt die letzten Alerts aus dem Audit-Log.
-        Wir filtern auf WEATHER_* Aktionen.
-        Rückgabe: Liste von Tupeln (timestamp, source, action, details)
-        """
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute(
-            """
-            SELECT timestamp, source, action, details
-            FROM audit_log
-            WHERE action LIKE 'WEATHER_%'
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,)
-        )
-        rows = c.fetchall()
-        conn.close()
-        return rows
 
 
 async def main():
