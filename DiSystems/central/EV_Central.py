@@ -120,6 +120,42 @@ class CentralServer:
 
                 msg = payload.strip()
 
+                # -----------------------------------------------------
+                # ENCRYPTED MESSAGE HANDLING (CP -> CENTRAL)
+                # -----------------------------------------------------
+                if msg.startswith("ENC#"):
+                    try:
+                        # CP ID aus writer beziehen (haben wir bei AUTH_CP gespeichert)
+                        cp_id = getattr(writer, "cp_id", None)
+                        if cp_id is None:
+                            print("[CENTRAL] ❌ Cannot decrypt: cp_id unknown")
+                            writer.write(pack_message("NACK#NO_CP_ID"))
+                            await writer.drain()
+                            continue
+
+                        encrypted_part = msg.split("#", 1)[1]
+                        sym = self.session_keys.get(cp_id)
+
+                        if not sym:
+                            print(f"[CENTRAL] ❌ No session key for CP {cp_id}")
+                            writer.write(pack_message("NACK#NO_KEY"))
+                            await writer.drain()
+                            continue
+
+                        decrypted = aes_decrypt(sym, encrypted_part)
+                        print(f"[CENTRAL] 🔐 Decrypted from {cp_id}: {decrypted}")
+
+                        # !!! WICHTIG !!!
+                        # überschreibe msg, damit die folgende Logik START_REQ / STOP_REQ behandelt
+                        msg = decrypted
+
+                    except Exception as e:
+                        print(f"[CENTRAL] ❌ Failed to decrypt CP message: {e}")
+                        writer.write(pack_message("NACK#DECRYPT_FAIL"))
+                        await writer.drain()
+                        continue
+
+
                 # ---------------------------
                 # AUTH CP
                 # ---------------------------
@@ -152,6 +188,7 @@ class CentralServer:
                     self.session_keys[cp_id] = sym_key
 
                     self.cp_sockets[cp_id] = writer
+                    writer.cp_id = cp_id
                     self.cp_meta.setdefault(cp_id, {})
                     self.cp_meta[cp_id].update({
                         "location": row[1],

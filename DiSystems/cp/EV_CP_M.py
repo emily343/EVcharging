@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+import requests
 
 from aiokafka import AIOKafkaProducer
 from common.protocol_utils import pack_message, unpack_message
@@ -42,6 +43,27 @@ class CPMonitor:
 
         self.central_reader = None
         self.central_writer = None
+
+    
+    async def register_at_registry(self):
+        url = "https://127.0.0.1:5001/register"
+        payload = {
+            "cp_id": MONITOR_ID,
+            "location": "UNKNOWN"
+        }
+
+        try:
+            r = requests.post(url, json=payload, verify=False)
+            data = r.json()
+
+            self.credential = data["credential"]
+            print(f"[MON-{MONITOR_ID}] Received credential from registry: {self.credential}")
+
+        except Exception as e:
+            print(f"[MON-{MONITOR_ID}] ERROR contacting registry: {e}")
+            await asyncio.sleep(2)
+            return await self.register_at_registry()
+
 
     # -------------------------------------------------
     # 1) AUTHENTICATION WITH CENTRAL
@@ -89,6 +111,7 @@ class CPMonitor:
     async def start(self):
         self.kafka = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
         await self.kafka.start()
+        await self.register_at_registry()
 
         # Authenticate monitor once at startup
         await self.authenticate_with_central()

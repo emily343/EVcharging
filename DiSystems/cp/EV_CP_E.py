@@ -17,14 +17,16 @@ EVENTS_TOPIC = TOPICS["cp_events"]
 CMD_TOPIC = TOPICS["central_cmd"]
 
 # parse args
-if len(sys.argv) < 5:
-    print("Usage: python -m cp.EV_CP_E <CP_ID> <LOCATION> <PRICE> <MONITOR_PORT>")
+if len(sys.argv) < 6:
+    print("Usage: python -m cp.EV_CP_E <CP_ID> <LOCATION> <PRICE> <MONITOR_PORT> <CREDENTIAL>")
     sys.exit(1)
 
 CP_ID = sys.argv[1]
 LOCATION = sys.argv[2]
 PRICE = float(sys.argv[3])
 MONITOR_PORT = int(sys.argv[4])
+CREDENTIAL = sys.argv[5]
+
 
 CENTRAL_HOST = "127.0.0.1"
 CENTRAL_PORT = 9002
@@ -73,9 +75,10 @@ class CPEngine:
                 r, w = await asyncio.open_connection(CENTRAL_HOST, CENTRAL_PORT)
                 self.central_reader, self.central_writer = r, w
 
-                reg = f"REGISTER#{CP_ID}#{LOCATION}#{PRICE}"
-                w.write(pack_message(reg))
+                auth_msg = f"AUTH_CP#{CP_ID}#{CREDENTIAL}"
+                w.write(pack_message(auth_msg))
                 await w.drain()
+
 
                 print(f"[{CP_ID}] ✅ Registered at Central")
 
@@ -141,6 +144,17 @@ class CPEngine:
                 if payload.startswith("STOP#"):
                     self.supplying = False
                     continue
+
+                if payload.startswith("AUTH_OK#"):
+                    _, cp_id, sym_key = payload.split("#")
+                    self.sym_key = sym_key
+                    print(f"[{CP_ID}]  Authenticated. AES key received.")
+                    continue
+
+                if payload.startswith("AUTH_FAIL"):
+                    print(f"[{CP_ID}]  AUTH FAIL: {payload}")
+                    return
+
 
         except Exception as e:
             print(f"[{CP_ID}] ⚠️ Lost connection to Central:", e)

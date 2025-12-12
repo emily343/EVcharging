@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import os
+from common.crypto_utils import aes_encrypt
 from common.protocol_utils import pack_message, unpack_message
 
 SERVICES_FILE = os.path.join(os.path.dirname(__file__), "..", "services.txt")
@@ -110,15 +111,18 @@ class Driver:
             cmd = await loop.run_in_executor(None, input, "> ")
 
             if cmd == "start":
-                self.writer.write(pack_message(f"START_REQ#{self.driver_id}"))
-                await self.writer.drain()
+                plaintext = f"START_REQ#{self.driver_id}"
+                encrypted = aes_encrypt(self.sym_key, plaintext)
+                self.central_writer.write(pack_message(f"ENC#{encrypted}"))
+                await self.central_writer.drain()
+
 
             elif cmd == "stop":
-                if self.current_session:
-                    self.writer.write(pack_message(f"STOP_REQ#{self.current_session}"))
-                    await self.writer.drain()
-                else:
-                    print("⚠️ No active session.")
+                plaintext = f"STOP_REQ#{self.session}"
+                encrypted = aes_encrypt(self.sym_key, plaintext)
+                self.central_writer.write(pack_message(f"ENC#{encrypted}"))
+                await self.central_writer.drain()
+
 
             elif cmd in ["quit", "exit"]:
                 print("👋 Bye!")
