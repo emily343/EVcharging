@@ -16,11 +16,13 @@ def init_db():
 
     # Charging points table 
     c.execute("""
-        CREATE TABLE IF NOT EXISTS charging_points (
-            id TEXT PRIMARY KEY,
-            location TEXT,
-            price REAL,
-            status TEXT
+       CREATE TABLE IF NOT EXISTS charging_points (
+        id TEXT PRIMARY KEY,
+        location TEXT,
+        price REAL,
+        status TEXT,
+        temperature REAL,
+        wind REAL
         )
     """)
 
@@ -97,8 +99,12 @@ def save_cp(cp_id, location, price, status="DESCONECTADO"):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
-        "REPLACE INTO charging_points VALUES (?, ?, ?, ?)",
-        (cp_id, location, price, status)
+    """
+    INSERT OR REPLACE INTO charging_points
+    (id, location, price, status, temperature, wind)
+    VALUES (?, ?, ?, ?, NULL, NULL)
+    """,
+    (cp_id, location, price, status)
     )
     conn.commit()
     conn.close()

@@ -28,8 +28,8 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 #tells kafka how to reach zookeeper 
       #speciies where kafka listens for connections 
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092 #0.0.0.0: listens on all network interfaces
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092 #what kafka tells clients to use when connecting
-      
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092,PLAINTEXT_INTERNAL://kafka:29092
+
       #security protocols - plaintext: no encryption or authentication
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL #which listeners brokers should talk to each other (internal one)

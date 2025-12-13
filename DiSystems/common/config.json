@@ -1,5 +1,11 @@
 {
   "kafka_bootstrap": "127.0.0.1:9092",
+  "registry_url": "https://127.0.0.1:5001",
+  "central_api_url": "http://127.0.0.1:8000/api",
+
+  "central_host": "127.0.0.1",
+  "central_port": 9002,
+
   "topics": {
     "telemetry": "cp_telemetry",
     "cp_status": "cp_status",
@@ -7,6 +13,6 @@
     "driver_events": "driver_events",
     "central_cmd": "central_cmd",
     "alerts": "alerts",
-    "weather_alerts": "weather_alerts"   
+    "weather_alerts": "weather_alerts"
   }
 }

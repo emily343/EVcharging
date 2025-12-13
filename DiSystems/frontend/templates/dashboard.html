@@ -3,18 +3,23 @@
 
 <h1>EV Charging Dashboard</h1>
 
+
 <div class="alerts">
     <h2>Alerts</h2>
     {% if alerts %}
         {% for a in alerts %}
             <div class="alert">
-                <b>{{ a.timestamp }}</b> — {{ a.level }} — {{ a.message }}
+                <b>{{ a.timestamp }}</b>
+                — {{ a.source }}
+                — {{ a.action }}
+                — {{ a.details }}
             </div>
         {% endfor %}
     {% else %}
         <p>No alerts.</p>
     {% endif %}
 </div>
+
 
 <h2>Charging Points</h2>
 
@@ -29,6 +34,8 @@
         <th>kW</th>
         <th>€</th>
         <th>Actions</th>
+        <th>Temp (°C)</th>
+        <th>Wind (km/h)</th>
     </tr>
 
     {% for cp in cps %}
@@ -37,10 +44,11 @@
         <td>{{ cp.location }}</td>
         <td>{{ cp.price }}</td>
         <td class="state {{ cp.status }}">{{ cp.status }}</td>
-        <td>{{ cp.session }}</td>
-        <td>{{ cp.driver }}</td>
-        <td>{{ cp.kw }}</td>
-        <td>{{ cp.eur }}</td>
+
+        <td>{{ cp.session if cp.session is defined else "-" }}</td>
+        <td>{{ cp.driver if cp.driver is defined else "-" }}</td>
+        <td>{{ cp.kw if cp.kw is defined else "-" }}</td>
+        <td>{{ cp.eur if cp.eur is defined else "-" }}</td>
 
         <td>
             <button onclick="sendCmd('stop', '{{ cp.cp_id }}')">STOP</button>
@@ -48,6 +56,9 @@
             <button onclick="sendCmd('out', '{{ cp.cp_id }}')">OUT</button>
             <button onclick="sendCmd('activate', '{{ cp.cp_id }}')">ACTIVATE</button>
         </td>
+
+        <td>{{ cp.temperature if cp.temperature is not none else "-" }}</td>
+        <td>{{ cp.wind if cp.wind is not none else "-" }}</td>
     </tr>
     {% endfor %}
 </table>
@@ -57,8 +68,10 @@ function sendCmd(cmd, cp_id) {
     fetch(`/cmd/${cmd}/${cp_id}`, { method: "POST" })
         .then(r => r.json())
         .then(res => alert(JSON.stringify(res)))
+        .catch(err => alert("Command failed"));
 }
 
+//auto refresh every 2 seconds
 setInterval(() => {
     location.reload();
 }, 2000);

@@ -30,44 +30,48 @@ def health():
     })
 
 
-@app.route("/register", methods=["POST"])
+@app.route("/register/cp", methods=["POST"])
 def register_cp():
-    """
-    Erwartet:
-    {
-        "cp_id": "CP001",
-        "location": "Berlin"
-    }
-    """
     data = request.get_json()
 
-    if not data or "cp_id" not in data or "location" not in data:
-        return jsonify({"error": True, "msg": "cp_id and location required"}), 400
+    if not data or not all(k in data for k in ("cp_id", "location", "credential")):
+        return jsonify({
+            "error": True,
+            "msg": "cp_id, location and credential required"
+        }), 400
 
     cp_id = data["cp_id"]
     location = data["location"]
+    credential_plain = data["credential"]
 
-    # credentials
-    secret_plain = secrets.token_hex(16)
-    secret_hash = hash_credential(secret_plain)
+    
+    secret_hash = hash_credential(credential_plain)
 
     try:
-        # save in central db 
+        # Save CP in registry
         registry_save_cp(cp_id, location, secret_hash)
 
-        # audit-log
-        log_audit("EV_Registry", "REGISTER_CP", f"{cp_id} at {location}")
+    
+        log_audit(
+            source="EV_Registry",
+            action="REGISTER_CP",
+            details=f"cp_id={cp_id} | location={location}"
+        )
 
-        # klartext-credentials zurückgeben
         return jsonify({
             "error": False,
             "cp_id": cp_id,
-            "location": location,
-            "credential": secret_plain
+            "location": location
         }), 201
 
     except Exception as e:
+        log_audit(
+            source="EV_Registry",
+            action="REGISTER_CP_FAILED",
+            details=f"cp_id={cp_id} | error={str(e)}"
+        )
         return jsonify({"error": True, "msg": str(e)}), 500
+
 
 
 @app.route("/unregister/<cp_id>", methods=["DELETE"])
@@ -92,6 +96,46 @@ def info(cp_id):
         "location": location,
         "active": active
     })
+
+
+@app.route("/auth/monitor", methods=["POST"])
+def auth_monitor():
+    data = request.get_json()
+    if not data:
+        return jsonify({"ok": False}), 400
+
+    mon_id = data.get("monitor_id")
+    credential = data.get("credential")
+
+    if not mon_id or not credential:
+        return jsonify({"ok": False}), 400
+
+    row = registry_get_cp(mon_id)
+    if not row:
+        return jsonify({"ok": False}), 403
+
+    cp_id, location, active = row
+    if not active:
+        return jsonify({"ok": False}), 403
+
+    hashed = hash_credential(credential)
+
+    from central.central_db import get_db_connection
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT credential_hash FROM registry_cp WHERE cp_id=?",
+        (mon_id,)
+    )
+    db_hash = cur.fetchone()[0]
+    conn.close()
+
+    if hashed != db_hash:
+        return jsonify({"ok": False}), 403
+
+    return jsonify({"ok": True}), 200
+
+
 
 
 if __name__ == "__main__":

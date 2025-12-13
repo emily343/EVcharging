@@ -2,6 +2,7 @@ import asyncio
 import json, os, random, sys, time
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from common.protocol_utils import pack_message, unpack_message
+from common.crypto_utils import encrypt_kafka_payload
 
 # load config 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "common", "config.json")
@@ -28,8 +29,8 @@ MONITOR_PORT = int(sys.argv[4])
 CREDENTIAL = sys.argv[5]
 
 
-CENTRAL_HOST = "127.0.0.1"
-CENTRAL_PORT = 9002
+CENTRAL_HOST = os.getenv("CENTRAL_HOST", CONFIG["central_host"])
+CENTRAL_PORT = int(os.getenv("CENTRAL_PORT", CONFIG["central_port"]))
 
 
 class CPEngine:
@@ -186,7 +187,13 @@ class CPEngine:
                 "eur": round(eur, 4),
                 "status": "CHARGING"
             }
-            await self.kafka.send_and_wait(TELEMETRY_TOPIC, json.dumps(telemetry).encode())
+            encrypted = encrypt_kafka_payload(self.sym_key, telemetry)
+
+            await self.kafka.send_and_wait(
+                TELEMETRY_TOPIC,
+                encrypted.encode()
+            )
+
 
             # nach 10 Schritten (~1.0 kWh) stoppen
             if self.total_kwh >= 1.0:
@@ -219,36 +226,50 @@ class CPEngine:
             cmd = data.get("cmd")
             target = data.get("cp_id")
 
-            # STOP = nur Ladevorgang abbrechen
+            # stops only charging session
             if cmd == "STOP_ALL" or (cmd == "STOP" and target == CP_ID):
                 print(f"\n[{CP_ID}] ⛔ STOP received — stopping charging session")
+
+                self.supplying = False   
+                self.session = None
+                self.driver = None
+
+                # CP bleibt verfügbar
+                await self.send_status("OK")
+
+           
+            # CP waits for new start
+            elif cmd == "RESUME_ALL" or (cmd == "RESUME" and target == CP_ID):
+                print(f"\n[{CP_ID}] RESUME received")
+
+                # RESUME doesn't start a new session
                 self.supplying = False
+                self.session = None
+                self.driver = None
 
-                # Nach einem STOP ist die CP weiterhin betriebsbereit!
-                print(f"[{CP_ID}] → Setting status to OK (ACTIVADO)")
                 await self.send_status("OK")
-                continue
 
-            # RESUME = nichts tun
-            # CP wartet einfach nur auf neuen START
-            if cmd == "RESUME_ALL" or (cmd == "RESUME" and target == CP_ID):
-                print(f"\n[{CP_ID}] 🔄 RESUME received (no active charging)")
-                print(f"[{CP_ID}] → Status bleibt OK (ACTIVADO)")
-                await self.send_status("OK")
-                continue
 
             # OUT = CP außer Betrieb nehmen
-            if cmd == "OUT" and target == CP_ID:
-                print(f"\n[{CP_ID}] ❌ OUT OF SERVICE received")
+            elif cmd == "OUT" and target == CP_ID:
+                print(f"\n[{CP_ID}] OUT OF SERVICE received")
+
                 self.supplying = False
+                self.session = None
+                self.driver = None
                 await self.send_status("OUT_OF_SERVICE")
-                continue
+                
 
             # ACTIVATE = CP wieder aktivieren
-            if cmd == "ACTIVATE" and target == CP_ID:
-                print(f"\n[{CP_ID}] 🟢 ACTIVATE received — CP available again")
+            elif cmd == "ACTIVATE" and target == CP_ID:
+                print(f"\n[{CP_ID}] ACTIVATE received")
+
+                self.supplying = False
+                self.session = None
+                self.driver = None
+
                 await self.send_status("OK")
-                continue
+                
 
 
 

@@ -14,6 +14,8 @@ with open(CONFIG_PATH) as f:
 
 KAFKA_BOOTSTRAP = CONFIG["kafka_bootstrap"]
 TOPIC_ALERTS = CONFIG["topics"]["weather_alerts"]
+CENTRAL_API_URL = CONFIG.get("central_api_url", "http://127.0.0.1:8000/api")
+
 
 # Dummy API Key – kann jeder beliebige sein (Open-Meteo braucht keinen)
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&windspeed_unit=kmh&current_weather=true"
@@ -74,7 +76,7 @@ class EVWeatherService:
         if temp and temp > 35:
             alerts.append("HEAT_WARNING")
 
-        # ---- Send alerts ----
+        # send alerts 
         for alert in alerts:
             msg = {
                 "timestamp": time(),
@@ -83,11 +85,39 @@ class EVWeatherService:
                 "temp": temp,
                 "wind": wind,
             }
-            await self.kafka.send_and_wait(TOPIC_ALERTS, json.dumps(msg).encode())
+
+            # kafk
+            await self.kafka.send_and_wait(
+                TOPIC_ALERTS,
+                json.dumps(msg).encode()
+            )
             print(f"[EV_W] ALERT sent → {alert} in {city}")
 
-            #write in audit-log in db
-            log_audit("EV_W", "WEATHER_ALERT", f"{alert} in {city} (T={temp}°C, W={wind} km/h)")
+            # central REST API 
+            try:
+                async with aiohttp.ClientSession() as session:
+                    await session.post(
+                        f"{CENTRAL_API_URL}/weather_alert",
+                        json={
+                            "city": city,
+                            "alert": alert,
+                            "temp": temp,
+                            "wind": wind
+                        },
+                        timeout=3
+                    )
+            except Exception as e:
+                print(f"[EV_W] Central API unreachable: {e}")
+
+            # audit-log
+            log_audit(
+                "EV_W",
+                "WEATHER_ALERT",
+                f"city={city} | alert={alert} | temp={temp} | wind={wind}"
+            )
+
+
+
 
 async def main():
     service = EVWeatherService()
