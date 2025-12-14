@@ -54,31 +54,51 @@ def list_cps():
 
     cur.execute("""
         SELECT
-            id,
-            location,
-            price,
-            status,
-            temperature,
-            wind
-        FROM charging_points
+            cp.id,
+            cp.location,
+            cp.price,
+            cp.status,
+            cp.temperature,
+            cp.wind,
+            s.session_id,
+            s.driver_id,
+            s.kwh,
+            s.eur
+        FROM charging_points cp
+        LEFT JOIN sessions s
+            ON cp.id = s.cp_id
+        AND s.end_time IS NULL
     """)
+
     rows = cur.fetchall()
     conn.close()
 
     cps = []
-    for cp_id, location, price, status, temperature, wind in rows:
+    for (
+        cp_id,
+        location,
+        price,
+        status,
+        temperature,
+        wind,
+        session_id,
+        driver_id,
+        kwh,
+        eur
+    ) in rows:
         cps.append({
-            "cp_id": cp_id,      # id → cp_id (Frontend expects this)
+            "cp_id": cp_id,
             "location": location,
             "price": price,
             "status": status,
             "temperature": temperature,
             "wind": wind,
-            "session": "-",
-            "driver": "-",
-            "kw": "-",
-            "eur": "-"
+            "session": session_id or "-",
+            "driver": driver_id or "-",
+            "kw": kwh if kwh is not None else "-",
+            "eur": eur if eur is not None else "-"
         })
+
 
     return jsonify(cps)
 
@@ -195,6 +215,33 @@ def weather_alert():
 
     return jsonify({"ok": True}), 200
 
+#weather updates
+@app.route("/api/weather_update", methods=["POST"])
+def weather_update():
+    data = request.get_json()
+    if not data:
+        return jsonify({"ok": False}), 400
+
+    city = data.get("city")
+    temp = data.get("temp")
+    wind = data.get("wind")
+
+    if city is None:
+        return jsonify({"ok": False}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE charging_points
+        SET temperature=?, wind=?
+        WHERE location=?
+    """, (temp, wind, city))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"ok": True})
+
+
 
 #central commands (buttons)
 @app.route("/api/central_cmd", methods=["POST"])
@@ -223,4 +270,5 @@ def central_cmd():
 #main
 if __name__ == "__main__":
     print("Central API running at http://127.0.0.1:8000")
-    app.run(host="127.0.0.1", port=8000)
+    app.run(host="0.0.0.0", port=8000)
+

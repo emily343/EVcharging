@@ -104,13 +104,20 @@ class EVWeatherService:
             except Exception as e:
                 print(f"[EV_W] Central API unreachable: {e}")
 
-            # audit-log
-            log_audit(
-                "EV_W",
-                "WEATHER_ALERT",
-                f"city={city} | alert={alert} | temp={temp} | wind={wind}"
-            )
-
+            # always send weather update (dashboard data)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    await session.post(
+                        f"{CENTRAL_API_URL}/weather_update",
+                        json={
+                            "city": city,
+                            "temp": temp,
+                            "wind": wind
+                        },
+                        timeout=3
+                    )
+            except Exception as e:
+                print(f"[EV_W] Weather update failed: {e}")
 
 
 

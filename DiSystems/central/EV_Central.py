@@ -212,7 +212,7 @@ class CentralServer:
                         await writer.drain()
                         continue
 
-                    session_id = f"S-{driver_id}-{cp_id}"
+                    session_id = f"S-{driver_id}-{cp_id}-{int(time.time())}"
                     self.sessions[session_id] = {"driver_id": driver_id, "cp_id": cp_id}
 
                     conn = get_db_connection()
@@ -309,7 +309,11 @@ class CentralServer:
                 elif rec.topic == STATUS_TOPIC:
                     self.on_status(data)
                 elif rec.topic == WEATHER_TOPIC:
-                    self.on_weather_alert(data)
+                    if "alert" in data:
+                        self.on_weather_alert(data)
+                    else:
+                        self.on_weather_update(data)
+
 
             except Exception as e:
                 print("Kafka error:", e)
@@ -320,8 +324,16 @@ class CentralServer:
         cp = data["cp_id"]
         meta = self.cp_meta[cp]
 
-        meta["kw"] = data.get("kw", 0.0)
-        meta["eur"] = data.get("eur", 0.0)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE sessions
+            SET kwh=?, eur=?
+            WHERE session_id=? AND end_time IS NULL
+        """, (data.get("kw", 0.0), data.get("eur", 0.0), meta["session"]))
+        conn.commit()
+        conn.close()
+
 
         if data["status"] == "FINISHED":
             session_id = meta["session"]
@@ -341,7 +353,17 @@ class CentralServer:
             conn.close()
 
             #send ticket to driver
-            driver_id = meta["driver"]
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT driver_id FROM sessions WHERE session_id=?",
+                (session_id,)
+            )
+            row = cur.fetchone()
+            conn.close()
+
+            driver_id = row[0] if row else None
+
             drv = self.driver_sockets.get(driver_id)
 
             if drv:
@@ -389,10 +411,13 @@ class CentralServer:
             meta["monitor_ok"] = (st == "OK")
 
         # Central decides CP status
-        if meta["engine_ok"] and meta["monitor_ok"]:
+        if meta["status"] == "SUMINISTRANDO":
+            final = "SUMINISTRANDO"
+        elif meta["engine_ok"] and meta["monitor_ok"]:
             final = "ACTIVADO"
         else:
             final = "DESCONECTADO"
+
 
         # Write to DB if changed
         if meta["status"] != final:
@@ -414,7 +439,22 @@ class CentralServer:
                 self.abort_session_due_to_cp_failure(cp_id, f"weather_{alert.lower()}")
                 update_cp_status(cp_id, "PARADO")
 
-   
+
+    def on_weather_update(self, data):
+        city = data["city"]
+        temp = data["temp"]
+        wind = data["wind"]
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE charging_points
+            SET temperature=?, wind=?
+            WHERE location=?
+        """, (temp, wind, city))
+        conn.commit()
+        conn.close()
+
 
     # HEARTBEAT
     async def heartbeat_watcher(self):

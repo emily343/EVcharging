@@ -188,12 +188,14 @@ class CPEngine:
                 "eur": round(eur, 4),
                 "status": "CHARGING"
             }
-            encrypted = encrypt_kafka_payload(self.sym_key, telemetry)
+            encrypted_final = encrypt_kafka_payload(self.sym_key, final)
 
             await self.kafka.send_and_wait(
                 TELEMETRY_TOPIC,
-                encrypted.encode()
+                encrypted_final.encode()
             )
+            
+
 
 
             # nach 10 Schritten (~1.0 kWh) stoppen

@@ -1,7 +1,21 @@
 from flask import Flask, render_template, request, jsonify
 import requests
+import json
+import os
 
-API_BASE = "http://127.0.0.1:8000/api"   # REST-API läuft via central_api.py
+
+CONFIG_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "common",
+    "config.json"
+)
+
+with open(CONFIG_PATH) as f:
+    CONFIG = json.load(f)
+
+API_BASE = CONFIG["central_api_url"]
+
 
 app = Flask(__name__)
 

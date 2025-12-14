@@ -9,16 +9,19 @@ def get_db_connection():
     conn = sqlite3.connect(
         DB_FILE,
         timeout=5,              
-        check_same_thread=False 
+        isolation_level=None,    
+        check_same_thread=False
     )
-    conn.execute("PRAGMA journal_mode=WAL;")   
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
     return conn
 
 
 
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
 
     # Charging points table 
@@ -103,7 +106,7 @@ def init_db():
 
 #cps
 def save_cp(cp_id, location, price, status="DESCONECTADO"):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
     """
@@ -118,7 +121,7 @@ def save_cp(cp_id, location, price, status="DESCONECTADO"):
 
 
 def update_cp_status(cp_id, status):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         "UPDATE charging_points SET status=? WHERE id=?",
@@ -131,16 +134,19 @@ def update_cp_status(cp_id, status):
 def get_free_cp():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute(
-        "SELECT id FROM charging_points WHERE status='ACTIVADO' LIMIT 1"
-    )
+    c.execute("""
+        SELECT id FROM charging_points
+        WHERE status IN ('ACTIVADO')
+        LIMIT 1
+    """)
     row = c.fetchone()
     conn.close()
     return row[0] if row else None
 
 
+
 def get_all_cps():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT * FROM charging_points")
     rows = c.fetchall()
@@ -149,7 +155,7 @@ def get_all_cps():
 
 
 def reset_all_cp_status(new_status):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         "UPDATE charging_points SET status = ?",
@@ -161,7 +167,7 @@ def reset_all_cp_status(new_status):
 
 #registry functions
 def registry_save_cp(cp_id: str, location: str, credential_hash: str):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """
@@ -175,7 +181,7 @@ def registry_save_cp(cp_id: str, location: str, credential_hash: str):
 
 
 def registry_deactivate_cp(cp_id: str) -> bool:
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("UPDATE registry_cp SET active = 0 WHERE cp_id=?", (cp_id,))
     changed = (c.rowcount > 0)
@@ -185,7 +191,7 @@ def registry_deactivate_cp(cp_id: str) -> bool:
 
 
 def registry_get_cp(cp_id: str):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         "SELECT cp_id, location, active FROM registry_cp WHERE cp_id = ?",
@@ -198,7 +204,7 @@ def registry_get_cp(cp_id: str):
 
 #cp key management 
 def store_cp_key(cp_id: str, sym_key: str):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """
@@ -215,7 +221,7 @@ def store_cp_key(cp_id: str, sym_key: str):
 
 
 def get_cp_key(cp_id: str) -> str | None:
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT sym_key FROM cp_keys WHERE cp_id=?", (cp_id,))
     row = c.fetchone()
@@ -226,7 +232,7 @@ def get_cp_key(cp_id: str) -> str | None:
 
 # audit log
 def log_audit(source: str, action: str, details: str):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """
@@ -241,7 +247,7 @@ def log_audit(source: str, action: str, details: str):
 
 # Weather Alerts 
 def add_weather_alert(cp_id: str, alert_type: str, message: str):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """

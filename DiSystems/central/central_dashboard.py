@@ -2,7 +2,10 @@ import time
 import os
 import sqlite3
 from colorama import Fore, Style, init as colorama_init
+from central.central_db import get_db_connection
 
+
+# old file from release 1, we don't use it anymore
 colorama_init()
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "central.db")
@@ -11,7 +14,7 @@ def clear():
     os.system("cls" if os.name == "nt" else "clear")
 
 def load_cps():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT * FROM charging_points")
     rows = c.fetchall()
