@@ -71,7 +71,7 @@ class CentralServer:
             TELEMETRY_TOPIC,
             STATUS_TOPIC,
             WEATHER_TOPIC,
-            CENTRAL_CMD_TOPIC,   # ← MUSS HIER DRIN SEIN
+            CENTRAL_CMD_TOPIC,   
             bootstrap_servers=KAFKA_BOOTSTRAP,
             group_id="central_group",
             auto_offset_reset="latest",
@@ -111,7 +111,7 @@ class CentralServer:
 
                 msg = payload.strip()
 
-                # ---------- ENCRYPTED CP → CENTRAL ----------
+                # encrypted cp -> engine
                 if msg.startswith("ENC#"):
                     cp_id = getattr(writer, "cp_id", None)
                     if not cp_id:
@@ -124,7 +124,7 @@ class CentralServer:
                     encrypted_part = msg.split("#", 1)[1]
                     msg = aes_decrypt(sym, encrypted_part)
 
-                # ---------- AUTH CP ----------
+                # auth cp
                 if msg.startswith("AUTH_CP#"):
                     _, cp_id, credential = msg.split("#")
 
@@ -170,7 +170,7 @@ class CentralServer:
                     await writer.drain()
                     continue
 
-                # ---------- AUTH MONITOR ----------
+                # auth monitor
                 if msg.startswith("AUTH_MON#"):
                     _, mon_id, credential = msg.split("#")
 
@@ -195,7 +195,7 @@ class CentralServer:
                     await writer.drain()
                     continue
 
-                # ---------- DRIVER AUTH ----------
+                # driver auth
                 if msg.startswith("AUTH_REQ#"):
                     _, driver_id = msg.split("#")
                     self.driver_sockets[driver_id] = writer
@@ -203,7 +203,7 @@ class CentralServer:
                     await writer.drain()
                     continue
 
-                # ---------- START ----------
+                # start
                 if msg.startswith("START_REQ#"):
                     _, driver_id = msg.split("#")
                     cp_id = get_free_cp()
@@ -259,7 +259,7 @@ class CentralServer:
                     cp_id = session["cp_id"]
                     meta = self.cp_meta[cp_id]
 
-                    # ---- finalize session in DB ----
+                    # finalize session in db
                     conn = get_db_connection()
                     cur = conn.cursor()
                     cur.execute(
@@ -275,14 +275,14 @@ class CentralServer:
                         f"session_id={session_id} | cp_id={cp_id}"
                     )
 
-                    # ---- tell CP to stop ----
+                    # tells cp to stop
                     cpw = self.cp_sockets.get(cp_id)
                     if cpw:
                         enc = aes_encrypt(self.session_keys[cp_id], f"STOP#{session_id}")
                         cpw.write(pack_message(f"ENC#{enc}"))
                         await cpw.drain()
 
-                    # ---- ticket to driver ----
+                    # driver ticket
                     writer.write(
                         pack_message(
                             f"TICKET#{session_id}#{meta['kw']}#{meta['eur']}"
@@ -290,7 +290,7 @@ class CentralServer:
                     )
                     await writer.drain()
 
-                    # ---- reset CP state ----
+                    # reset cp state
                     meta.update({
                         "status": "ACTIVADO",
                         "driver": "-",
@@ -363,7 +363,6 @@ class CentralServer:
                         log_audit("EV_Central", "CP_RESUME", f"cp_id={cp_id}")
 
                     continue
-
 
 
 
@@ -494,7 +493,6 @@ class CentralServer:
         self.last_seen[cp] = time.time()
 
 
-
     def on_weather_alert(self, data):
         city = data["city"]
         alert = data["alert"]
@@ -502,9 +500,12 @@ class CentralServer:
         log_audit("EV_Central", "WEATHER_ALERT", f"{alert} in {city}")
 
         for cp_id, meta in self.cp_meta.items():
-            if meta["location"] == city:
+            if meta.get("location") == city:
+                if meta.get("status") == "PARADO":
+                    continue
                 self.abort_session_due_to_cp_failure(cp_id, f"weather_{alert.lower()}")
                 update_cp_status(cp_id, "PARADO")
+
 
 
     def on_weather_update(self, data):
@@ -532,17 +533,17 @@ class CentralServer:
             for cp, ts in list(self.last_seen.items()):
                 meta = self.cp_meta.get(cp, {})
 
-                # respect admin PARADO
+                
                 if meta.get("status") == "PARADO":
                     continue
 
                 if now - ts > HEARTBEAT_TIMEOUT_SEC:
                     self.abort_session_due_to_cp_failure(cp, "heartbeat_timeout")
                     update_cp_status(cp, "DESCONECTADO")
-
+        
     
 
-    # SESSION ABORT
+
     def abort_session_due_to_cp_failure(self, cp_id: str, reason: str):
         meta = self.cp_meta.get(cp_id)
         if not meta or meta["session"] == "-":

@@ -59,10 +59,10 @@ class CPEngine:
         await self.cmd_consumer.start()
         asyncio.create_task(self.listen_cmd())
 
-        # Heartbeat monitor listener
+        # heartbeat monitor listener
         asyncio.create_task(self.monitor_server())
 
-        # Register to Central (TCP)
+        # register to Central (TCP)
         await self.connect_central()
 
         # to keep engine alive
@@ -81,12 +81,12 @@ class CPEngine:
                 await w.drain()
 
 
-                print(f"[{CP_ID}] ✅ Registered at Central")
+                print(f"[{CP_ID}] Registered at Central")
 
                 asyncio.create_task(self.listen_central())
                 return
             except:
-                print(f"[{CP_ID}] ❌ Central offline, retrying…")
+                print(f"[{CP_ID}] Central offline, retrying…")
                 await self.send_status("DISCONNECTED")
                 await asyncio.sleep(2)
 
@@ -109,10 +109,10 @@ class CPEngine:
                     try:
                         decrypted = aes_decrypt(self.sym_key, encrypted_json)
                     except Exception as e:
-                        print(f"[{CP_ID}] ❌ Decryption failed:", e)
+                        print(f"[{CP_ID}]  Decryption failed:", e)
                         continue
 
-                    print(f"[{CP_ID}] 🔐 Decrypted:", decrypted)
+                    print(f"[{CP_ID}]  Decrypted:", decrypted)
 
                     # start
                     if decrypted.startswith("START#"):
@@ -132,6 +132,8 @@ class CPEngine:
                     # unknown
                     print(f"[{CP_ID}] Unknown decrypted message:", decrypted)
                     continue
+
+                
 
 
                 #plaintext command 
@@ -159,14 +161,14 @@ class CPEngine:
 
 
         except Exception as e:
-            print(f"[{CP_ID}] ⚠️ Lost connection to Central:", e)
+            print(f"[{CP_ID}]  Lost connection to Central:", e)
             await self.send_status("DISCONNECTED")
             asyncio.create_task(self.connect_central())
 
 
     # Charging Simulation 
     async def start_supply(self):
-        print(f"[{CP_ID}] 🚗 Charging session {self.session} for driver {self.driver}")
+        print(f"[{CP_ID}]  Charging session {self.session} for driver {self.driver}")
         self.supplying = True
         self.total_kwh = 0.0
 
@@ -213,7 +215,7 @@ class CPEngine:
             encrypted_final.encode()
         )
 
-        print(f"[{CP_ID}] 🔌 Charging complete")
+        print(f"[{CP_ID}]  Charging complete")
 
         self.supplying = False
         self.session = None
@@ -290,7 +292,7 @@ class CPEngine:
                 pass
 
         server = await asyncio.start_server(handle, "0.0.0.0", MONITOR_PORT)
-        print(f"[{CP_ID}] 🫀 Waiting for monitor on port {MONITOR_PORT}…")
+        print(f"[{CP_ID}]  Waiting for monitor on port {MONITOR_PORT}…")
         async with server:
             await server.serve_forever()
 

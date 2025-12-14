@@ -4,7 +4,7 @@ import json
 import os
 from time import time
 
-# ---- Load config ----
+# load config
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "common", "config.json")
 with open(CONFIG_PATH) as f:
     CONFIG = json.load(f)
@@ -19,7 +19,7 @@ CENTRAL_API = CONFIG["central_api_url"]
 
 class EVWeatherService:
     def __init__(self):
-        self.last_state = {}  # city -> OK / ALERT
+        self.last_state = {}  
 
     async def start(self):
         print("[EV_W] Weather Service started (OpenWeather)")
@@ -33,13 +33,13 @@ class EVWeatherService:
 
             await asyncio.sleep(INTERVAL)
 
-    # ---- get cities dynamically from Central ----
+    # get cities dynamically from central
     async def fetch_cities(self):
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{CENTRAL_API}/locations", timeout=3) as r:
                 return await r.json()
 
-    # ---- query OpenWeather ----
+    # query OpenWeather 
     async def check_city(self, city):
         params = {
             "q": city,
@@ -56,10 +56,10 @@ class EVWeatherService:
 
         print(f"[EV_W] {city}: {temp}°C, wind {wind}")
 
-        # ---- always send update ----
+        # always send update 
         await self.send_weather_update(city, temp, wind)
 
-        # ---- alert logic ----
+        # alert logic 
         if temp < 0:
             if self.last_state.get(city) != "ALERT":
                 await self.send_alert(city, "LOW_TEMPERATURE", temp, wind)
@@ -67,7 +67,7 @@ class EVWeatherService:
         else:
             self.last_state[city] = "OK"
 
-    # ---- REST calls to Central ----
+    # REST calls to central
     async def send_alert(self, city, alert, temp, wind):
         print(f"[EV_W] ALERT {alert} in {city}")
         async with aiohttp.ClientSession() as session:

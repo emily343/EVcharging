@@ -27,10 +27,10 @@ class Driver:
         while True:
             try:
                 self.reader, self.writer = await asyncio.open_connection(self.central_ip, self.central_port)
-                print(f"✅ Connected to Central at {self.central_ip}:{self.central_port}")
+                print(f" Connected to Central at {self.central_ip}:{self.central_port}")
                 break
             except:
-                print("❌ Central not reachable — retry...")
+                print(" Central not reachable — retry...")
                 await asyncio.sleep(2)
 
     # Start Driver 
@@ -50,9 +50,9 @@ class Driver:
                 if not ok:
                     continue
 
-                # Handshake complete
+               
                 if payload.startswith("AUTH_RESP"):
-                    print(f"👋 Driver {self.driver_id} authenticated.")
+                    print(f" Driver {self.driver_id} authenticated.")
                     if self.auto:
                         asyncio.create_task(self.run_auto_cycle())
                     else:
@@ -68,13 +68,13 @@ class Driver:
                     self.current_session = None
                     continue
 
-                # Start session
+                #start session
                 elif payload.startswith("START#"):
                     _, session_id, cp_id = payload.split("#")
                     self.current_session = session_id
                     print(f"⚡ Charging started at {cp_id} | Session {session_id}")
 
-                # Ticket from central
+                # ticket from central
                 elif payload.startswith("TICKET#"):
                     _, session, kw, eur = payload.split("#")
                     print("\n===== ✅ SESSION SUMMARY =====")
@@ -86,24 +86,24 @@ class Driver:
                     self.current_session = None
 
                 elif payload.startswith("STOP_ERROR"):
-                    print("⚠️ Central reports: No active session to stop.")
+                    print(" Central reports: No active session to stop")
                     continue
 
-                # Central forced stop
+                # central forced stop
                 elif payload.startswith("STOP#"):
-                    print("🛑 Charging stopped by Central.")
-                    print("🔄 Ready for new start.")
+                    print(" Charging stopped by Central.")
+                    print(" Ready for new start")
                     self.current_session = None
                     
 
 
             except asyncio.IncompleteReadError:
-                print("⚠️ Central disconnected — reconnecting…")
+                print("Central disconnected — reconnecting…")
                 await self.connect()
                 self.writer.write(pack_message(f"AUTH_REQ#{self.driver_id}"))
                 await self.writer.drain()
 
-    # ---------------- Manual Mode ----------------
+    # manual mode
     async def user_input(self):
         loop = asyncio.get_event_loop()
         while True:
@@ -124,7 +124,7 @@ class Driver:
 
 
             elif cmd in ["quit", "exit"]:
-                print("👋 Bye!")
+                print("Bye!")
                 self.writer.close()
                 await self.writer.wait_closed()
                 break
@@ -132,13 +132,13 @@ class Driver:
             else:
                 print("Commands: start | stop | exit")
 
-    # Auto Mode 
+    # auto mode
     async def run_auto_cycle(self):
         with open(SERVICES_FILE) as f:
             cps = [line.strip() for line in f]
 
         for cp in cps:
-            print(f"🚘 Auto: Requesting charge at {cp}")
+            print(f"Auto: Requesting charge at {cp}")
             self.writer.write(pack_message(f"START_REQ#{self.driver_id}"))
             await self.writer.drain()
             await asyncio.sleep(8)

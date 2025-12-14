@@ -9,9 +9,7 @@ from aiokafka import AIOKafkaProducer
 from common.protocol_utils import pack_message, unpack_message
 
 
-# -----------------------------
-# CONFIG
-# -----------------------------
+#config
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "common", "config.json")
 with open(CONFIG_PATH) as f:
     CONFIG = json.load(f)
@@ -21,9 +19,7 @@ STATUS_TOPIC = CONFIG["topics"]["cp_status"]
 REGISTRY_URL = CONFIG["registry_url"]
 
 
-# -----------------------------
-# ARGUMENTS
-# -----------------------------
+#arguments
 if len(sys.argv) < 5:
     print("Usage: python -m cp.EV_CP_M <ENGINE_HOST> <ENGINE_PORT> <MONITOR_ID> <CREDENTIAL>")
     sys.exit(1)
@@ -44,9 +40,7 @@ class CPMonitor:
         self.central_reader = None
         self.central_writer = None
 
-    # -------------------------------------------------
-    # 1) AUTHENTICATE AT REGISTRY (HTTP)
-    # -------------------------------------------------
+   #authenticate at registry
     async def authenticate_at_registry(self):
         while True:
             try:
@@ -71,9 +65,7 @@ class CPMonitor:
                 print(f"[MON-{MONITOR_ID}] Registry not reachable: {e}")
                 await asyncio.sleep(2)
 
-    # -------------------------------------------------
-    # 2) AUTHENTICATE WITH CENTRAL (TCP)
-    # -------------------------------------------------
+    #authenticate with central (TCP)
     async def authenticate_with_central(self):
         while True:
             try:
@@ -100,9 +92,7 @@ class CPMonitor:
                 print(f"[MON-{MONITOR_ID}] Central not reachable: {e}")
                 await asyncio.sleep(2)
 
-    # -------------------------------------------------
-    # 3) SEND STATUS TO CENTRAL (Kafka)
-    # -------------------------------------------------
+    #send status to central 
     async def send_status(self, status: str):
         msg = {"cp_id": MONITOR_ID, "status": status, "source": "MONITOR"}
         print(f"[MON-{MONITOR_ID}] STATUS {status}")
@@ -111,9 +101,7 @@ class CPMonitor:
             json.dumps(msg).encode()
         )
 
-    # -------------------------------------------------
-    # 4) MAIN LOOP
-    # -------------------------------------------------
+    #main loop
     async def start(self):
         self.kafka = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
         await self.kafka.start()

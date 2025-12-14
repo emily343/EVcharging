@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+
 import json
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import TopicAlreadyExistsError
 
-# read bootstrap & topics from common/config.json
+# read bootstrap and topics from common/config.json
 import os
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "common", "config.json")
 with open(CONFIG_PATH) as f:

@@ -1,53 +1,46 @@
-# EV Charging Distributed System (Sockets + Kafka)
+# EV Charging Distributed System 
 
-This project simulates a real electric vehicle charging network with:
+This project implements a distributed EV charging system combining
+**TCP sockets**, **Kafka**, **REST APIs** and a **central dashboard**.
 
-- Central Control Server
-- Charging Point Engine
-- Charging Point Monitor (health module)
-- Driver App
-- Kafka event streaming (telemetry and alerts)
-- SQLite database
+The system manages charging sessions, monitors charging point health,
+reacts to weather conditions and allows manual intervention via a web interface.
 
+---
 
-## Architecture
+## Current Features
 
-- CP <-> Central 
-- CP Monitor -> CP Engine 
-- CP & Monitor -> Kafka (telemetry + alerts)
-- Driver <-> Central socket authorization & session control
+- Central server coordinating all charging points
+- Charging Point Engine simulating charging sessions
+- Charging Point Monitor with heartbeat-based failure detection
+- Driver client to start and stop charging sessions
+- Web dashboard to monitor system state in real time
+- Weather service influencing charging availability
+- Kafka-based telemetry, status updates and commands
+- SQLite database with persistent sessions and audit logs
 
-## How to run: 
+---
 
-### Installation
+## Architecture Overview
 
-cd DiSystems
-python -m venv venv
-source venv/bin/activate    (Windows: venv\Scripts\activate)
-pip install -r common/requirements.txt
+- **Charging Point ↔ Central** (TCP sockets, encrypted)
+- **Monitor → Central** (heartbeat & status via Kafka)
+- **Driver ↔ Central** (TCP session control)
+- **Weather Service → Central API** (REST)
+- **Central ↔ Kafka** (telemetry, status, commands)
+- **Dashboard → Central API** (REST)
 
+---
 
-### 1. Start Kafka
+## Security Overview
 
-docker compose up -d
+- Asymmetric authentication between **Registry and Charging Points**
+- Symmetric AES encryption between **Central and Charging Points**
+- Encrypted Kafka telemetry messages
+- All critical actions recorded in the audit log
 
-### 2. Start Central
-
-cd DiSystems
-source venv/bin/activate
-python -m central.EV_Central 9002
-
-### 3. Start Charging Points & Monitors (new Terminal)
-
-cd DiSystems
-venv\Scripts\activate
-python -m cp.EV_CP_E CP001 Berlin 0.25 9101 --central-ip <CENTRAL-IP>
-python -m cp.EV_CP_M CP001 9101 --central-ip <CENTRAL-IP>
-
-### 4. Start Driver (new Terminal)
-
-python -m driver.EV_Driver --central-ip <CENTRAL-IP> --central-port 9002 --driver-id D01
-
-#### driver commands: 
-- start
-- stop
+## Requirements
+- Python 3.10+
+- Docker & Docker Compose
+- Kafka
+- SQLite
