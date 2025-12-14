@@ -86,12 +86,7 @@ class EVWeatherService:
                 "wind": wind,
             }
 
-            # kafk
-            await self.kafka.send_and_wait(
-                TOPIC_ALERTS,
-                json.dumps(msg).encode()
-            )
-            print(f"[EV_W] ALERT sent → {alert} in {city}")
+
 
             # central REST API 
             try:

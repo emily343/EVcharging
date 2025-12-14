@@ -104,7 +104,7 @@ class CPMonitor:
     # 3) SEND STATUS TO CENTRAL (Kafka)
     # -------------------------------------------------
     async def send_status(self, status: str):
-        msg = {"cp_id": MONITOR_ID, "status": status}
+        msg = {"cp_id": MONITOR_ID, "status": status, "source": "MONITOR"}
         print(f"[MON-{MONITOR_ID}] STATUS {status}")
         await self.kafka.send_and_wait(
             STATUS_TOPIC,

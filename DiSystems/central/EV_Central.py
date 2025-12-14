@@ -158,9 +158,11 @@ class CentralServer:
                         "session": "-",
                         "kw": 0.0,
                         "eur": 0.0,
-                    }
 
+                    }
+                    self.last_seen[cp_id] = time.time()
                     update_cp_status(cp_id, "ACTIVADO")
+                    save_cp(cp_id, row[1], 0.25, "ACTIVADO")
                     self.last_seen[cp_id] = time.time()
 
                     writer.write(pack_message(f"AUTH_OK#{cp_id}#{sym_key}"))
@@ -175,7 +177,8 @@ class CentralServer:
                         r = requests.post(
                             f"{REGISTRY_URL}/auth/monitor",
                             json={"monitor_id": mon_id, "credential": credential},
-                            timeout=3
+                            timeout=3,
+                            verify=False
                         )
                     except Exception:
                         writer.write(pack_message("AUTH_MON_FAIL"))
@@ -184,6 +187,7 @@ class CentralServer:
 
                     if r.status_code == 200 and r.json().get("ok"):
                         writer.write(pack_message(f"AUTH_MON_OK#{mon_id}"))
+                        self.last_seen[mon_id] = time.time()
                     else:
                         writer.write(pack_message("AUTH_MON_FAIL"))
 
@@ -241,7 +245,7 @@ class CentralServer:
                     update_cp_status(cp_id, "SUMINISTRANDO")
                     continue
 
-                # ---------- STOP ----------
+                # stop
                 if msg.startswith("STOP_REQ#"):
                     _, session_id = msg.split("#")
                     session = self.sessions.get(session_id)
@@ -278,17 +282,27 @@ class CentralServer:
         async for rec in self.kafka_consumer:
             try:
                 ciphertext = rec.value.decode()
-                data = None
 
-                for sym in self.session_keys.values():
+                
+                if rec.topic in (STATUS_TOPIC, WEATHER_TOPIC):
                     try:
-                        data = decrypt_kafka_payload(sym, ciphertext)
-                        break
+                        data = json.loads(ciphertext)
                     except Exception:
-                        pass
+                        continue
 
-                if not data:
-                    continue
+            
+                else:
+                    data = None
+                    for sym in self.session_keys.values():
+                        try:
+                            data = decrypt_kafka_payload(sym, ciphertext)
+                            break
+                        except Exception:
+                            pass
+
+                    if not data:
+                        continue
+                
 
                 if rec.topic == TELEMETRY_TOPIC:
                     self.on_telemetry(data)
@@ -326,6 +340,19 @@ class CentralServer:
             conn.commit()
             conn.close()
 
+            #send ticket to driver
+            driver_id = meta["driver"]
+            drv = self.driver_sockets.get(driver_id)
+
+            if drv:
+                drv.write(
+                    pack_message(
+                        f"TICKET#{session_id}#{meta['kw']}#{meta['eur']}"
+                    )
+                )
+                asyncio.create_task(drv.drain())
+
+
             meta.update({"status": "ACTIVADO", "session": "-", "driver": "-", "kw": 0.0, "eur": 0.0})
             update_cp_status(cp, "ACTIVADO")
 
@@ -337,22 +364,44 @@ class CentralServer:
     def on_status(self, data):
         cp = data["cp_id"]
         st = data["status"].upper()
+        source = data.get("source")
 
-        if st in ("DISCONNECTED", "FAULT", "OUT_OF_SERVICE"):
-            self.abort_session_due_to_cp_failure(cp, st.lower())
+        # Ensure CP meta exists and is complete 
+        if cp not in self.cp_meta:
+            self.cp_meta[cp] = {}
 
-        mapping = {
-            "OK": "ACTIVADO",
-            "FAULT": "AVERIADO",
-            "OUT_OF_SERVICE": "PARADO",
-            "DISCONNECTED": "DESCONECTADO",
-        }
+        meta = self.cp_meta[cp]
 
-        if st in mapping:
-            update_cp_status(cp, mapping[st])
-            self.cp_meta[cp]["status"] = mapping[st]
+        
+        meta.setdefault("engine_ok", False)
+        meta.setdefault("monitor_ok", False)
+        meta.setdefault("status", "DESCONECTADO")
+        meta.setdefault("location", "-")
+        meta.setdefault("driver", "-")
+        meta.setdefault("session", "-")
+        meta.setdefault("kw", 0.0)
+        meta.setdefault("eur", 0.0)
 
+        # Update flags
+        if source == "ENGINE":
+            meta["engine_ok"] = (st == "OK")
+        elif source == "MONITOR":
+            meta["monitor_ok"] = (st == "OK")
+
+        # Central decides CP status
+        if meta["engine_ok"] and meta["monitor_ok"]:
+            final = "ACTIVADO"
+        else:
+            final = "DESCONECTADO"
+
+        # Write to DB if changed
+        if meta["status"] != final:
+            meta["status"] = final
+            update_cp_status(cp, final)
+
+        # Heartbeat
         self.last_seen[cp] = time.time()
+
 
     def on_weather_alert(self, data):
         city = data["city"]

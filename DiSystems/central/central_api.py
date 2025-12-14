@@ -6,14 +6,12 @@ import asyncio
 from aiokafka import AIOKafkaProducer
 
 from central.central_db import (
-    get_all_cps,
     get_recent_alerts,
     get_db_connection,
     log_audit,
 )
 
-
-# LOAD CONFIG
+#load config
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "common", "config.json")
 with open(CONFIG_PATH) as f:
     CONFIG = json.load(f)
@@ -22,13 +20,10 @@ CENTRAL_CMD_TOPIC = CONFIG["topics"]["central_cmd"]
 
 app = Flask(__name__)
 
-# Kafka producer 
+#kafka producers
 producer = None
 
-
-# kafka helper
 async def send_kafka_cmd(payload: dict):
-  
     global producer
 
     if producer is None:
@@ -42,9 +37,7 @@ async def send_kafka_cmd(payload: dict):
         json.dumps(payload).encode()
     )
 
-
-
-# API ROUTES
+#api routes
 @app.route("/api/health")
 def health():
     return jsonify({
@@ -53,6 +46,7 @@ def health():
     })
 
 
+#list fo all cps
 @app.route("/api/cps", methods=["GET"])
 def list_cps():
     conn = get_db_connection()
@@ -70,10 +64,11 @@ def list_cps():
     """)
     rows = cur.fetchall()
     conn.close()
+
     cps = []
     for cp_id, location, price, status, temperature, wind in rows:
         cps.append({
-            "cp_id": cp_id,          # <-- id wird hier bewusst zu cp_id gemappt
+            "cp_id": cp_id,      # id → cp_id (Frontend expects this)
             "location": location,
             "price": price,
             "status": status,
@@ -88,17 +83,16 @@ def list_cps():
     return jsonify(cps)
 
 
-
-
+#cp details
 @app.route("/api/cps/<cp_id>", methods=["GET"])
 def cp_details(cp_id):
     conn = get_db_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT cp_id, location, price, status, temperature, wind
+        SELECT id, location, price, status, temperature, wind
         FROM charging_points
-        WHERE cp_id=?
+        WHERE id = ?
     """, (cp_id,))
     row = cur.fetchone()
     conn.close()
@@ -118,6 +112,7 @@ def cp_details(cp_id):
     })
 
 
+#alerts
 @app.route("/api/alerts", methods=["GET"])
 def list_alerts():
     rows = get_recent_alerts(limit=30)
@@ -134,6 +129,7 @@ def list_alerts():
     return jsonify(alerts)
 
 
+#session history
 @app.route("/api/sessions", methods=["GET"])
 def session_history():
     conn = get_db_connection()
@@ -164,11 +160,9 @@ def session_history():
     return jsonify(result)
 
 
+#weather alerts
 @app.route("/api/weather_alert", methods=["POST"])
 def weather_alert():
-    """
-    Weather service calls this endpoint.
-    """
     data = request.get_json()
     if not data:
         return jsonify({"ok": False}), 400
@@ -181,22 +175,20 @@ def weather_alert():
     if not city or not alert:
         return jsonify({"ok": False}), 400
 
-    # Audit
     log_audit(
         "EV_Weather",
         "WEATHER_ALERT",
         f"{alert} in {city} (T={temp}, W={wind})"
     )
 
-    # Update CPs in this city
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
         UPDATE charging_points
-        SET status='PARADO',
-            temperature=?,
-            wind=?
-        WHERE location=?
+        SET status = 'PARADO',
+            temperature = ?,
+            wind = ?
+        WHERE location = ?
     """, (temp, wind, city))
     conn.commit()
     conn.close()
@@ -204,11 +196,9 @@ def weather_alert():
     return jsonify({"ok": True}), 200
 
 
+#central commands (buttons)
 @app.route("/api/central_cmd", methods=["POST"])
 def central_cmd():
-    """
-    Frontend sends STOP / RESUME / OUT / ACTIVATE commands.
-    """
     data = request.get_json()
     if not data or "cmd" not in data:
         return jsonify({"ok": False, "msg": "cmd required"}), 400
@@ -220,20 +210,17 @@ def central_cmd():
     if cp_id:
         payload["cp_id"] = cp_id.upper()
 
-   
     log_audit(
         "CENTRAL_API",
         "CENTRAL_CMD",
         f"cmd={cmd}" + (f" | cp_id={cp_id}" if cp_id else "")
     )
 
-    # Send via Kafka
     asyncio.run(send_kafka_cmd(payload))
 
     return jsonify({"ok": True, "sent": payload}), 200
 
-
-
+#main
 if __name__ == "__main__":
     print("Central API running at http://127.0.0.1:8000")
     app.run(host="127.0.0.1", port=8000)

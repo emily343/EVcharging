@@ -150,6 +150,7 @@ class CPEngine:
                     _, cp_id, sym_key = payload.split("#")
                     self.sym_key = sym_key
                     print(f"[{CP_ID}]  Authenticated. AES key received.")
+                    await self.send_status("OK")
                     continue
 
                 if payload.startswith("AUTH_FAIL"):
@@ -228,7 +229,7 @@ class CPEngine:
 
             # stops only charging session
             if cmd == "STOP_ALL" or (cmd == "STOP" and target == CP_ID):
-                print(f"\n[{CP_ID}] ⛔ STOP received — stopping charging session")
+                print(f"\n[{CP_ID}] STOP received — stopping charging session")
 
                 self.supplying = False   
                 self.session = None
@@ -293,7 +294,7 @@ class CPEngine:
 
     # Kafka helper 
     async def send_status(self, status):
-        msg = {"cp_id": CP_ID, "status": status}
+        msg = {"cp_id": CP_ID, "status": status, "source": "ENGINE"}
         await self.kafka.send_and_wait(STATUS_TOPIC, json.dumps(msg).encode())
 
 

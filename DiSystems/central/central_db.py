@@ -6,8 +6,15 @@ DB_FILE = os.path.join(os.path.dirname(__file__), "central.db")
 
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(
+        DB_FILE,
+        timeout=5,              
+        check_same_thread=False 
+    )
+    conn.execute("PRAGMA journal_mode=WAL;")   
+    conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
+
 
 
 def init_db():
