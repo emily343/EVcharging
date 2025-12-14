@@ -14,5 +14,14 @@
     "central_cmd": "central_cmd",
     "alerts": "alerts",
     "weather_alerts": "weather_alerts"
+  },
+
+  
+  "openweather": {
+    "api_key": "bae910c315489ecc67eb4d4b55ca392f",
+    "base_url": "https://api.openweathermap.org/data/2.5/weather",
+    "poll_interval_sec": 10
   }
+  
+  
 }

@@ -132,16 +132,17 @@ def update_cp_status(cp_id, status):
 
 
 def get_free_cp():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
         SELECT id FROM charging_points
-        WHERE status IN ('ACTIVADO')
+        WHERE status = 'ACTIVADO'
         LIMIT 1
     """)
-    row = c.fetchone()
+    row = cur.fetchone()
     conn.close()
     return row[0] if row else None
+
 
 
 

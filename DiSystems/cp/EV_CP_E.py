@@ -170,13 +170,10 @@ class CPEngine:
         self.supplying = True
         self.total_kwh = 0.0
 
-        await self.send_status("OK")  # CP is fully operational
+        await self.send_status("OK")
 
-        # Demo: etwa 10 Sekunden laden, ca. 1.0 kWh
         while self.supplying:
             kw = 7.2 + random.uniform(-0.3, 0.3)
-
-            # statt kw/3600 sehr kleine Werte -> hier einfach 0.1 kWh pro Sekunde
             self.total_kwh += 0.1
             eur = self.total_kwh * PRICE
 
@@ -184,42 +181,44 @@ class CPEngine:
                 "cp_id": CP_ID,
                 "session_id": self.session,
                 "driver": self.driver,
-                "kw": round(kw, 3),
+                "kw": round(self.total_kwh, 3),
                 "eur": round(eur, 4),
                 "status": "CHARGING"
             }
-            encrypted_final = encrypt_kafka_payload(self.sym_key, final)
 
+            encrypted = encrypt_kafka_payload(self.sym_key, telemetry)
             await self.kafka.send_and_wait(
                 TELEMETRY_TOPIC,
-                encrypted_final.encode()
+                encrypted.encode()
             )
-            
 
-
-
-            # nach 10 Schritten (~1.0 kWh) stoppen
             if self.total_kwh >= 1.0:
                 break
 
             await asyncio.sleep(1)
 
-        # finale Nachricht mit kWh UND €
-        final = {
+        # final message
+        final_msg = {
             "cp_id": CP_ID,
             "session_id": self.session,
             "driver": self.driver,
-            "status": "FINISHED",
             "kw": round(self.total_kwh, 3),
-            "eur": round(self.total_kwh * PRICE, 4)
+            "eur": round(self.total_kwh * PRICE, 4),
+            "status": "FINISHED"
         }
-        await self.kafka.send_and_wait(TELEMETRY_TOPIC, json.dumps(final).encode())
+
+        encrypted_final = encrypt_kafka_payload(self.sym_key, final_msg)
+        await self.kafka.send_and_wait(
+            TELEMETRY_TOPIC,
+            encrypted_final.encode()
+        )
 
         print(f"[{CP_ID}] 🔌 Charging complete")
 
         self.supplying = False
         self.session = None
         self.driver = None
+
 
 
     # Kafka broadcast listener
@@ -260,7 +259,8 @@ class CPEngine:
                 self.supplying = False
                 self.session = None
                 self.driver = None
-                await self.send_status("OUT_OF_SERVICE")
+                await self.send_status("DISCONNECTED")
+
                 
 
             # ACTIVATE = CP wieder aktivieren

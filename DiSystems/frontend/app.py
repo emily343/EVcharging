@@ -36,10 +36,12 @@ def sessions():
 # -------- CENTRAL COMMANDS (Buttons) ----------
 @app.route("/cmd/<cmd>/<cp_id>", methods=["POST"])
 def send_cmd(cmd, cp_id):
+    print("BUTTON PRESSED:", cmd, cp_id)   # ← NUR ZUM TEST
     url = f"{API_BASE}/central_cmd"
     payload = {"cmd": cmd.upper(), "cp_id": cp_id.upper()}
     r = requests.post(url, json=payload)
     return jsonify(r.json())
+
 
 
 if __name__ == "__main__":

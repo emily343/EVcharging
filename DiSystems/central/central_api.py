@@ -267,6 +267,18 @@ def central_cmd():
 
     return jsonify({"ok": True, "sent": payload}), 200
 
+@app.route("/api/locations", methods=["GET"])
+def get_locations():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT DISTINCT location FROM charging_points")
+    rows = cur.fetchall()
+    conn.close()
+
+    return jsonify([r[0] for r in rows])
+
+
 #main
 if __name__ == "__main__":
     print("Central API running at http://127.0.0.1:8000")

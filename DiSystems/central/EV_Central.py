@@ -71,6 +71,7 @@ class CentralServer:
             TELEMETRY_TOPIC,
             STATUS_TOPIC,
             WEATHER_TOPIC,
+            CENTRAL_CMD_TOPIC,   # ← MUSS HIER DRIN SEIN
             bootstrap_servers=KAFKA_BOOTSTRAP,
             group_id="central_group",
             auto_offset_reset="latest",
@@ -248,30 +249,59 @@ class CentralServer:
                 # stop
                 if msg.startswith("STOP_REQ#"):
                     _, session_id = msg.split("#")
-                    session = self.sessions.get(session_id)
+                    session = self.sessions.pop(session_id, None)
+
                     if not session:
+                        writer.write(pack_message("STOP_ERROR"))
+                        await writer.drain()
                         continue
 
                     cp_id = session["cp_id"]
+                    meta = self.cp_meta[cp_id]
+
+                    # ---- finalize session in DB ----
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE sessions SET end_time=?, kwh=?, eur=? WHERE session_id=?",
+                        (time.time(), meta["kw"], meta["eur"], session_id)
+                    )
+                    conn.commit()
+                    conn.close()
 
                     log_audit(
                         "EV_Central",
-                        "SESSION_STOP",
+                        "SESSION_STOPPED_BY_DRIVER",
                         f"session_id={session_id} | cp_id={cp_id}"
                     )
 
+                    # ---- tell CP to stop ----
                     cpw = self.cp_sockets.get(cp_id)
-                    enc = aes_encrypt(self.session_keys[cp_id], f"STOP#{session_id}")
-                    cpw.write(pack_message(f"ENC#{enc}"))
-                    await cpw.drain()
+                    if cpw:
+                        enc = aes_encrypt(self.session_keys[cp_id], f"STOP#{session_id}")
+                        cpw.write(pack_message(f"ENC#{enc}"))
+                        await cpw.drain()
 
-                    self.cp_meta[cp_id].update({
+                    # ---- ticket to driver ----
+                    writer.write(
+                        pack_message(
+                            f"TICKET#{session_id}#{meta['kw']}#{meta['eur']}"
+                        )
+                    )
+                    await writer.drain()
+
+                    # ---- reset CP state ----
+                    meta.update({
                         "status": "ACTIVADO",
                         "driver": "-",
-                        "session": "-"
+                        "session": "-",
+                        "kw": 0.0,
+                        "eur": 0.0
                     })
                     update_cp_status(cp_id, "ACTIVADO")
+
                     continue
+
 
         except Exception as e:
             print(f"Client disconnected {addr}: {e}")
@@ -284,25 +314,58 @@ class CentralServer:
                 ciphertext = rec.value.decode()
 
                 
-                if rec.topic in (STATUS_TOPIC, WEATHER_TOPIC):
-                    try:
-                        data = json.loads(ciphertext)
-                    except Exception:
-                        continue
-
-            
+                # decode kafka payload 
+                if rec.topic in (STATUS_TOPIC, WEATHER_TOPIC, CENTRAL_CMD_TOPIC):
+                    data = json.loads(ciphertext)
                 else:
                     data = None
                     for sym in self.session_keys.values():
                         try:
                             data = decrypt_kafka_payload(sym, ciphertext)
                             break
-                        except Exception:
+                        except:
                             pass
 
-                    if not data:
-                        continue
+                if not data:
+                    continue
+
+
                 
+                
+                # central commands from frontend
+                if rec.topic == CENTRAL_CMD_TOPIC:
+                    cmd = data.get("cmd")
+                    cp_id = data.get("cp_id")
+
+                    if not cp_id or cp_id not in self.cp_meta:
+                        continue
+
+                    meta = self.cp_meta[cp_id]
+
+                    if cmd == "OUT":
+                        meta.update({
+                            "status": "PARADO",
+                            "driver": "-",
+                            "session": "-"
+                        })
+                        update_cp_status(cp_id, "PARADO")
+
+                        log_audit("EV_Central", "CP_OUT", f"cp_id={cp_id}")
+
+                    elif cmd == "RESUME":
+                        meta.update({
+                            "status": "ACTIVADO",
+                            "engine_ok": False,
+                            "monitor_ok": False
+                        })
+                        update_cp_status(cp_id, "ACTIVADO")
+
+                        log_audit("EV_Central", "CP_RESUME", f"cp_id={cp_id}")
+
+                    continue
+
+
+
 
                 if rec.topic == TELEMETRY_TOPIC:
                     self.on_telemetry(data)
@@ -323,6 +386,9 @@ class CentralServer:
     def on_telemetry(self, data):
         cp = data["cp_id"]
         meta = self.cp_meta[cp]
+
+        meta["kw"] = data.get("kw", meta.get("kw", 0.0))
+        meta["eur"] = data.get("eur", meta.get("eur", 0.0))
 
         conn = get_db_connection()
         cur = conn.cursor()
@@ -388,29 +454,32 @@ class CentralServer:
         st = data["status"].upper()
         source = data.get("source")
 
-        # Ensure CP meta exists and is complete 
+        # ensure meta exists
         if cp not in self.cp_meta:
             self.cp_meta[cp] = {}
 
         meta = self.cp_meta[cp]
 
-        
         meta.setdefault("engine_ok", False)
         meta.setdefault("monitor_ok", False)
         meta.setdefault("status", "DESCONECTADO")
-        meta.setdefault("location", "-")
         meta.setdefault("driver", "-")
         meta.setdefault("session", "-")
         meta.setdefault("kw", 0.0)
         meta.setdefault("eur", 0.0)
 
-        # Update flags
+        # admin override
+        if meta["status"] == "PARADO":
+            self.last_seen[cp] = time.time()
+            return
+
+        # update engine / monitor flags
         if source == "ENGINE":
             meta["engine_ok"] = (st == "OK")
         elif source == "MONITOR":
             meta["monitor_ok"] = (st == "OK")
 
-        # Central decides CP status
+        # decide final status
         if meta["status"] == "SUMINISTRANDO":
             final = "SUMINISTRANDO"
         elif meta["engine_ok"] and meta["monitor_ok"]:
@@ -418,14 +487,12 @@ class CentralServer:
         else:
             final = "DESCONECTADO"
 
-
-        # Write to DB if changed
         if meta["status"] != final:
             meta["status"] = final
             update_cp_status(cp, final)
 
-        # Heartbeat
         self.last_seen[cp] = time.time()
+
 
 
     def on_weather_alert(self, data):
@@ -463,6 +530,12 @@ class CentralServer:
             now = time.time()
 
             for cp, ts in list(self.last_seen.items()):
+                meta = self.cp_meta.get(cp, {})
+
+                # respect admin PARADO
+                if meta.get("status") == "PARADO":
+                    continue
+
                 if now - ts > HEARTBEAT_TIMEOUT_SEC:
                     self.abort_session_due_to_cp_failure(cp, "heartbeat_timeout")
                     update_cp_status(cp, "DESCONECTADO")

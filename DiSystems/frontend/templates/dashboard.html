@@ -44,17 +44,15 @@
         <td>{{ cp.location }}</td>
         <td>{{ cp.price }}</td>
         <td class="state {{ cp.status }}">{{ cp.status }}</td>
-
+        
         <td>{{ cp.session if cp.session is defined else "-" }}</td>
         <td>{{ cp.driver if cp.driver is defined else "-" }}</td>
         <td>{{ cp.kw if cp.kw is defined else "-" }}</td>
         <td>{{ cp.eur if cp.eur is defined else "-" }}</td>
 
         <td>
-            <button onclick="sendCmd('stop', '{{ cp.cp_id }}')">STOP</button>
-            <button onclick="sendCmd('resume', '{{ cp.cp_id }}')">RESUME</button>
             <button onclick="sendCmd('out', '{{ cp.cp_id }}')">OUT</button>
-            <button onclick="sendCmd('activate', '{{ cp.cp_id }}')">ACTIVATE</button>
+            <button onclick="sendCmd('resume', '{{ cp.cp_id }}')">RESUME</button>
         </td>
 
         <td>{{ cp.temperature if cp.temperature is not none else "-" }}</td>
